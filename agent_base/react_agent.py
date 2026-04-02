@@ -648,11 +648,13 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str],
     parser.add_argument("--save-path", help="Optional JSONL trace output path.")
     parser.add_argument("--workspace-dir", help="Optional workspace directory for Bash and TerminalStart.")
     parser.add_argument(
+        "--plugin",
         "--prompt-plugin",
         action="append",
         default=[],
         dest="prompt_plugins",
-        help="Optional prompt plugin name. May be passed multiple times. Example: --prompt-plugin academic_research",
+        metavar="PLUGIN",
+        help="Optional plugin name. May be passed multiple times. Example: --plugin academic_research",
     )
     args = parser.parse_args(argv)
 

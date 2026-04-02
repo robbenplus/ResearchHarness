@@ -74,7 +74,7 @@ def resolve_prompt_plugins(names: Iterable[str]) -> list[PromptAsset]:
         asset = PROMPT_PLUGINS.get(name)
         if asset is None:
             valid = ", ".join(sorted(PROMPT_PLUGINS))
-            raise ValueError(f"Unknown prompt plugin '{name}'. Available plugins: {valid}")
+            raise ValueError(f"Unknown plugin '{name}'. Available plugins: {valid}")
         resolved.append(asset)
     return resolved
 
@@ -92,7 +92,10 @@ def composed_system_prompt(*, current_date: str, plugin_names: list[str] | None 
 
 
 def configured_prompt_plugins() -> list[str]:
-    return dedupe_plugin_names(plugin_names_from_csv(os.environ.get("PROMPT_PLUGINS", "")))
+    return dedupe_plugin_names(
+        plugin_names_from_csv(os.environ.get("PLUGINS", ""))
+        + plugin_names_from_csv(os.environ.get("PROMPT_PLUGINS", ""))
+    )
 
 
 def _show_asset(name: str) -> str:
@@ -104,19 +107,19 @@ def _show_asset(name: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect prompt assets and prompt plugins.")
+    parser = argparse.ArgumentParser(description="Inspect prompt assets and plugins.")
     parser.add_argument("--show-system", action="store_true", help="Print the composed system prompt.")
     parser.add_argument("--show-extractor", action="store_true", help="Print the extractor prompt.")
     parser.add_argument("--show-asset", metavar="NAME", help="Print one prompt asset by name.")
     parser.add_argument("--list-assets", action="store_true", help="List registered prompt assets.")
-    parser.add_argument("--show-plugin", metavar="NAME", help="Print one registered prompt plugin.")
-    parser.add_argument("--list-plugins", action="store_true", help="List registered prompt plugins.")
+    parser.add_argument("--show-plugin", metavar="NAME", help="Print one registered plugin.")
+    parser.add_argument("--list-plugins", action="store_true", help="List registered plugins.")
     parser.add_argument(
         "--with-plugin",
         action="append",
         default=[],
         dest="plugins",
-        help="Include a prompt plugin when printing the composed system prompt. May be passed multiple times.",
+        help="Include a plugin when printing the composed system prompt. May be passed multiple times.",
     )
     args = parser.parse_args(argv)
 
@@ -149,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"prompt_asset_dir={PROMPTS_DIR}")
     print(f"system_prompt_chars={len(composed_system_prompt(current_date='<DATE>', plugin_names=args.plugins))}")
     print(f"extractor_prompt_chars={len(EXTRACTOR_PROMPT)}")
-    print(f"prompt_plugin_count={len(PROMPT_PLUGINS)}")
+    print(f"plugin_count={len(PROMPT_PLUGINS)}")
     return 0
 
 
