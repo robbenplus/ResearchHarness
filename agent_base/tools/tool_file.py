@@ -225,11 +225,13 @@ class ReadPDF(ToolBase):
             if not isinstance(result, dict):
                 raise ValueError(f"unexpected pdf result type: {type(result)}")
             text = result.get("text", "")
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError("PDF text is empty")
+            if not isinstance(text, str):
+                raise ValueError("PDF text must be a string")
             raw_img_paths = result.get("img_paths", []) or []
             if not isinstance(raw_img_paths, list):
                 raise ValueError("PDF img_paths must be a list when present")
+            if not text.strip() and not raw_img_paths:
+                raise ValueError("PDF text is empty and no extracted images were found")
         except (OSError, ValueError, TypeError) as exc:
             return f"[ReadPDF] Error reading PDF: {exc}"
 
@@ -239,7 +241,7 @@ class ReadPDF(ToolBase):
                 continue
             candidate = Path(raw_img_path).expanduser()
             if not candidate.is_absolute():
-                candidate = (Path.cwd() / candidate).resolve()
+                candidate = (path.parent / candidate).resolve()
             try:
                 validated = validate_tool_path(candidate, "ReadPDF extracted image access", base_root=base_root)
             except ValueError:
@@ -248,7 +250,7 @@ class ReadPDF(ToolBase):
 
         truncated = len(text) > max_chars
         content = text[:max_chars] if truncated else text
-        line_count = len(content.splitlines())
+        line_count = len(text.splitlines())
         listed_img_paths = resolved_img_paths[:max_image_paths]
         img_paths_truncated = len(resolved_img_paths) > len(listed_img_paths)
         meta = [

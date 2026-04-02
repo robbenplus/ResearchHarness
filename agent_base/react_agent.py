@@ -58,6 +58,12 @@ def llm_max_output_tokens() -> int:
     return int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "10000"))
 
 
+def remaining_runtime_seconds(runtime_deadline: Optional[float]) -> Optional[float]:
+    if runtime_deadline is None:
+        return None
+    return runtime_deadline - time.time()
+
+
 def debug_enabled() -> bool:
     return env_flag("DEBUG_AGENT")
 
@@ -252,7 +258,7 @@ class MultiTurnReactAgent:
             else None
         )
 
-    def call_llm_api(self, msgs, max_tries=10) -> dict[str, Any]:
+    def call_llm_api(self, msgs, max_tries=10, runtime_deadline: Optional[float] = None) -> dict[str, Any]:
         max_tries = int(self.llm_generate_cfg.get("max_retries", max_tries))
         if self._llm_client is None or not self._llm_api_base:
             return {"status": "error", "error": "llm api error: API_BASE is not set."}
@@ -260,9 +266,18 @@ class MultiTurnReactAgent:
         base_sleep_time = 1
         last_error = "unknown llm error"
         for attempt in range(max_tries):
+            remaining = remaining_runtime_seconds(runtime_deadline)
+            if remaining is not None and remaining <= 0:
+                last_error = "agent runtime limit reached before llm call could complete"
+                break
             try:
                 if debug_enabled():
                     print(f"--- Attempting to call the service, try {attempt + 1}/{max_tries} ---")
+                request_client = (
+                    self._llm_client.with_options(timeout=min(self._llm_timeout_seconds, max(remaining, 0.001)))
+                    if remaining is not None
+                    else self._llm_client
+                )
                 request_kwargs = dict(
                     model=self.model,
                     messages=msgs,
@@ -274,7 +289,7 @@ class MultiTurnReactAgent:
                     max_tokens=llm_max_output_tokens(),
                 )
                 request_kwargs["presence_penalty"] = self.llm_generate_cfg.get('presence_penalty', 1.1)
-                chat_response = self._llm_client.chat.completions.create(**request_kwargs)
+                chat_response = request_client.chat.completions.create(**request_kwargs)
                 choice = chat_response.choices[0]
                 message = choice.message
                 content = message.content
@@ -301,10 +316,17 @@ class MultiTurnReactAgent:
 
             if attempt < max_tries - 1:
                 sleep_time = base_sleep_time * (2 ** attempt) + random.uniform(0, 1)
-                sleep_time = min(sleep_time, 30) 
+                sleep_time = min(sleep_time, 30)
+                remaining = remaining_runtime_seconds(runtime_deadline)
+                if remaining is not None:
+                    if remaining <= 0:
+                        last_error = "agent runtime limit reached before llm retry could complete"
+                        break
+                    sleep_time = min(sleep_time, remaining)
                 if debug_enabled():
                     print(f"Retrying in {sleep_time:.2f} seconds...")
-                time.sleep(sleep_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
             else:
                 if debug_enabled():
                     print("Error: All retry attempts have been exhausted. The call has failed.")
@@ -366,6 +388,7 @@ class MultiTurnReactAgent:
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
         max_llm_calls = max_llm_calls_per_run()
         agent_runtime_limit = max_agent_runtime_seconds()
+        runtime_deadline = start_time + agent_runtime_limit
         num_llm_calls_available = max_llm_calls
         round_index = 0
         trace_writer = FlatTraceWriter(
@@ -394,13 +417,13 @@ class MultiTurnReactAgent:
         trace_writer.append(role="user", text=user_content, turn_index=0)
 
         while num_llm_calls_available > 0:
-            if time.time() - start_time > agent_runtime_limit:
+            if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                 result_text = "No result found before the maximum agent runtime limit."
                 termination = f"agent runtime limit reached: {agent_runtime_limit}s"
                 return finalize(result_text, termination, error=termination)
             round_index += 1
             num_llm_calls_available -= 1
-            llm_reply = self.call_llm_api(messages)
+            llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
             assistant_content = llm_reply.get("content") if isinstance(llm_reply, dict) else None
             assistant_tool_calls = llm_reply.get("tool_calls", []) if isinstance(llm_reply, dict) else []
             assistant_text = assistant_text_content(assistant_content)
@@ -493,10 +516,19 @@ class MultiTurnReactAgent:
                 }
                 messages.append(assistant_message)
                 for tool_call, tool_arguments in zip(assistant_tool_calls, assistant_tool_arguments):
+                    if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
+                        result_text = "No result found before the maximum agent runtime limit."
+                        termination = f"agent runtime limit reached: {agent_runtime_limit}s"
+                        return finalize(result_text, termination, error=termination)
                     tool_call_id = str(tool_call.get("id", ""))
                     function_block = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
                     tool_name = str(function_block.get("name", ""))
-                    result = self.custom_call_tool(tool_name, tool_arguments, workspace_root=workspace_root)
+                    result = self.custom_call_tool(
+                        tool_name,
+                        tool_arguments,
+                        workspace_root=workspace_root,
+                        runtime_deadline=runtime_deadline,
+                    )
                     tool_result_text = tool_result_message_content(result)
                     messages.append(api_tool_message(tool_call_id, result))
                     trace_writer.append(
@@ -519,6 +551,10 @@ class MultiTurnReactAgent:
                             tool_arguments=[tool_arguments],
                             image_paths=image_trace_paths(result),
                         )
+                    if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
+                        result_text = "No result found before the maximum agent runtime limit."
+                        termination = f"agent runtime limit reached: {agent_runtime_limit}s"
+                        return finalize(result_text, termination, error=termination)
             elif assistant_has_meaningful_text(assistant_content):
                 current_result_text = assistant_text.strip()
                 current_termination = "result"

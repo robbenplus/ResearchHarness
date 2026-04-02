@@ -333,6 +333,12 @@ class WebFetch(ToolBase):
         )
         return self._summary_client
 
+    @staticmethod
+    def _remaining_budget_seconds(runtime_deadline: Optional[float]) -> Optional[float]:
+        if runtime_deadline is None:
+            return None
+        return runtime_deadline - time.time()
+
     def call(self, params: Union[str, dict], **kwargs) -> str:
         try:
             params = self.parse_json_args(params)
@@ -340,21 +346,31 @@ class WebFetch(ToolBase):
             goal = params["goal"]
         except ValueError as exc:
             return f"[WebFetch] {exc}"
+        runtime_deadline = kwargs.get("runtime_deadline")
 
         start_time = time.time()
 
         if isinstance(url, str):
-            response = self.readpage_jina(url, goal)
+            response = self.readpage_jina(url, goal, runtime_deadline=runtime_deadline)
         elif isinstance(url, list):
             response = []
             start_time = time.time()
             for one_url in url:
+                remaining = self._remaining_budget_seconds(runtime_deadline)
+                if remaining is not None and remaining <= 0:
+                    cur_response = _webfetch_failure(
+                        url=one_url,
+                        goal=goal,
+                        reason="Agent runtime limit reached before WebFetch could complete.",
+                    )
+                    response.append(cur_response)
+                    continue
                 if time.time() - start_time > 900:
                     cur_response = "The useful information in {url} for user goal {goal} as follows: \n\n".format(url=one_url, goal=goal)
                     cur_response += "Evidence in page: \n" + "The provided webpage content could not be accessed. Please check the URL or file format." + "\n\n"
                     cur_response += "Summary: \n" + "The webpage content could not be processed, and therefore, no information is available." + "\n\n"
                 else:
-                    cur_response = self.readpage_jina(one_url, goal)
+                    cur_response = self.readpage_jina(one_url, goal, runtime_deadline=runtime_deadline)
                 response.append(cur_response)
             response = "\n=======\n".join(response)
         else:
@@ -364,14 +380,22 @@ class WebFetch(ToolBase):
             print(f"Summary Length {len(response)}")
         return response.strip()
 
-    def call_server(self, msgs, max_retries=2):
+    def call_server(self, msgs, max_retries=2, runtime_deadline: Optional[float] = None):
         client = self._ensure_summary_client()
         if client is None or not self._summary_api_base:
             return "[WebFetch] Summary model error: API_BASE is not set."
         last_error = "unknown summary-model error"
         for attempt in range(max_retries):
+            remaining = self._remaining_budget_seconds(runtime_deadline)
+            if remaining is not None and remaining <= 0:
+                return "[WebFetch] Summary model error: agent runtime limit reached."
             try:
-                chat_response = client.chat.completions.create(
+                request_client = (
+                    client.with_options(timeout=min(self._summary_timeout_seconds, max(remaining, 0.001)))
+                    if remaining is not None
+                    else client
+                )
+                chat_response = request_client.chat.completions.create(
                     model=self._summary_model_name,
                     messages=msgs,
                     temperature=self._summary_temperature,
@@ -387,7 +411,7 @@ class WebFetch(ToolBase):
 
         return f"[WebFetch] Summary model error: {last_error}"
 
-    def jina_readpage(self, url: str) -> str:
+    def jina_readpage(self, url: str, runtime_deadline: Optional[float] = None) -> str:
         max_retries = 3
         timeout = 50
         jina_api_key = os.getenv("JINA_API_KEYS", "").strip()
@@ -400,10 +424,13 @@ class WebFetch(ToolBase):
                 "Authorization": f"Bearer {jina_api_key}",
             }
             try:
+                remaining = self._remaining_budget_seconds(runtime_deadline)
+                if remaining is not None and remaining <= 0:
+                    return "[WebFetch] Failed to read page: agent runtime limit reached."
                 response = requests.get(
                     f"https://r.jina.ai/{url}",
                     headers=headers,
-                    timeout=timeout,
+                    timeout=min(timeout, max(remaining, 0.001)) if remaining is not None else timeout,
                 )
                 if response.status_code == 200:
                     return response.text
@@ -412,32 +439,45 @@ class WebFetch(ToolBase):
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
             except requests.RequestException as exc:
                 last_error = str(exc)
-                time.sleep(0.5)
+                remaining = self._remaining_budget_seconds(runtime_deadline)
+                if remaining is not None and remaining <= 0:
+                    return "[WebFetch] Failed to read page: agent runtime limit reached."
+                time.sleep(min(0.5, remaining) if remaining is not None else 0.5)
                 if attempt == max_retries - 1:
                     return f"[WebFetch] Failed to read page: {last_error}"
 
         return f"[WebFetch] Failed to read page: {last_error}"
 
-    def html_readpage_jina(self, url: str) -> str:
+    def html_readpage_jina(self, url: str, runtime_deadline: Optional[float] = None) -> str:
         max_attempts = 8
         for _ in range(max_attempts):
-            content = self.jina_readpage(url)
+            remaining = self._remaining_budget_seconds(runtime_deadline)
+            if remaining is not None and remaining <= 0:
+                return "[WebFetch] Failed to read page: agent runtime limit reached."
+            content = self.jina_readpage(url, runtime_deadline=runtime_deadline)
             if content and not content.startswith("[WebFetch] Failed to read page:") and content != "[WebFetch] Empty content." and not content.startswith("[document_parser]"):
                 return content
         return "[WebFetch] Failed to read page: exhausted retries"
 
-    def readpage_jina(self, url: str, goal: str) -> str:
+    def readpage_jina(self, url: str, goal: str, runtime_deadline: Optional[float] = None) -> str:
         summary_page_func = self.call_server
         max_retries = int(os.getenv("VISIT_SERVER_MAX_RETRIES", 1))
 
-        content = self.html_readpage_jina(url)
+        content = self.html_readpage_jina(url, runtime_deadline=runtime_deadline)
 
         if content and not content.startswith("[WebFetch] Failed to read page:") and content != "[WebFetch] Empty content." and not content.startswith("[document_parser]"):
             content = truncate_to_tokens(content, max_tokens=95000)
             messages = [{"role": "user", "content": EXTRACTOR_PROMPT.format(webpage_content=content, goal=goal)}]
-            raw = summary_page_func(messages, max_retries=max_retries)
+            raw = summary_page_func(messages, max_retries=max_retries, runtime_deadline=runtime_deadline)
             summary_retries = 3
             while len(raw) < 10 and summary_retries >= 0:
+                remaining = self._remaining_budget_seconds(runtime_deadline)
+                if remaining is not None and remaining <= 0:
+                    return _webfetch_failure(
+                        url=url,
+                        goal=goal,
+                        reason="Agent runtime limit reached before WebFetch could complete.",
+                    )
                 truncate_length = int(0.7 * len(content)) if summary_retries > 0 else 25000
                 status_msg = (
                     f"[WebFetch] Summary url[{url}] "
@@ -456,7 +496,7 @@ class WebFetch(ToolBase):
                     goal=goal,
                 )
                 messages = [{"role": "user", "content": extraction_prompt}]
-                raw = summary_page_func(messages, max_retries=max_retries)
+                raw = summary_page_func(messages, max_retries=max_retries, runtime_deadline=runtime_deadline)
                 summary_retries -= 1
 
             parse_retry_times = 0
@@ -464,7 +504,14 @@ class WebFetch(ToolBase):
             while parse_retry_times < 3:
                 if parsed is not None:
                     break
-                raw = summary_page_func(messages, max_retries=max_retries)
+                remaining = self._remaining_budget_seconds(runtime_deadline)
+                if remaining is not None and remaining <= 0:
+                    return _webfetch_failure(
+                        url=url,
+                        goal=goal,
+                        reason="Agent runtime limit reached before WebFetch could complete.",
+                    )
+                raw = summary_page_func(messages, max_retries=max_retries, runtime_deadline=runtime_deadline)
                 parsed = _parse_extractor_payload(raw)
                 parse_retry_times += 1
 

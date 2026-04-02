@@ -94,6 +94,7 @@ class Bash(ToolBase):
         except ValueError as exc:
             return f"[Bash] {exc}"
         base_root = kwargs.get("workspace_root")
+        runtime_deadline = kwargs.get("runtime_deadline")
 
         command = str(params["command"])
         workdir = params.get("workdir")
@@ -117,13 +118,20 @@ class Bash(ToolBase):
         if timeout <= 0:
             return "[Bash] timeout must be > 0."
 
+        effective_timeout: float = float(timeout)
+        if runtime_deadline is not None:
+            remaining = float(runtime_deadline) - time.time()
+            if remaining <= 0:
+                return "[Bash] Agent runtime limit reached before command execution."
+            effective_timeout = min(effective_timeout, max(remaining, 0.001))
+
         try:
             proc = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=effective_timeout,
                 cwd=str(cwd),
                 env=sanitized_subprocess_env(base_root=base_root),
                 executable=shutil.which("bash") or "/bin/bash",
@@ -248,11 +256,11 @@ class TerminalSession:
             "truncated": remaining_output_chars > 0,
         }
 
-    def interrupt(self) -> dict:
+    def interrupt(self, *, max_output_chars: int = DEFAULT_OUTPUT_CHARS) -> dict:
         if not self.alive:
             raise RuntimeError("session is not running")
         os.write(self._master_fd, b"\x03")
-        return self.read(yield_time_ms=DEFAULT_YIELD_MS, max_output_chars=DEFAULT_OUTPUT_CHARS)
+        return self.read(yield_time_ms=DEFAULT_YIELD_MS, max_output_chars=max_output_chars)
 
     def terminate(self, force: bool = False) -> Optional[int]:
         if self.alive:
@@ -613,10 +621,7 @@ class TerminalInterrupt(ToolBase):
             return "[TerminalInterrupt] max_output_chars must be > 0."
 
         try:
-            payload = session.interrupt()
-            if len(payload["output"]) > max_output_chars:
-                payload["output"] = payload["output"][:max_output_chars]
-                payload["truncated"] = True
+            payload = session.interrupt(max_output_chars=max_output_chars)
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             return f"[TerminalInterrupt] Failed to interrupt session {session_id}: {exc}"
 
