@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 import tiktoken
 from agent_base.console_utils import ConsoleEventPrinter
-from agent_base.prompt import SYSTEM_PROMPT
+from agent_base.prompt import composed_system_prompt, configured_prompt_plugins
 from agent_base.trace_utils import FlatTraceWriter
 from agent_base.tools.tooling import normalize_workspace_root
 from agent_base.tools.tool_file import Edit, Glob, Grep, Read, ReadImage, ReadPDF, Write
@@ -210,11 +210,30 @@ def default_llm_config() -> dict:
     }
 
 
-def build_default_agent(*, trace_path: Optional[str] = None, function_list: Optional[List[str]] = None) -> "MultiTurnReactAgent":
+def merged_prompt_plugins(extra_plugins: Optional[List[str]] = None) -> list[str]:
+    configured = configured_prompt_plugins()
+    extra = [plugin for plugin in (extra_plugins or []) if str(plugin).strip()]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for plugin in configured + extra:
+        if plugin in seen:
+            continue
+        merged.append(plugin)
+        seen.add(plugin)
+    return merged
+
+
+def build_default_agent(
+    *,
+    trace_path: Optional[str] = None,
+    function_list: Optional[List[str]] = None,
+    prompt_plugins: Optional[List[str]] = None,
+) -> "MultiTurnReactAgent":
     return MultiTurnReactAgent(
         llm=default_llm_config(),
         trace_path=trace_path,
         function_list=function_list or list(AVAILABLE_TOOL_MAP.keys()),
+        prompt_plugins=merged_prompt_plugins(prompt_plugins),
     )
 
 class MultiTurnReactAgent:
@@ -223,6 +242,7 @@ class MultiTurnReactAgent:
         function_list: Optional[List[str]] = None,
         llm: Optional[Dict] = None,
         trace_path: Optional[str] = None,
+        prompt_plugins: Optional[List[str]] = None,
     ):
         if not isinstance(llm, dict):
             raise ValueError("llm must be a dict configuration.")
@@ -240,6 +260,7 @@ class MultiTurnReactAgent:
         self.model = str(llm["model"])
         self.llm_generate_cfg = llm["generate_cfg"]
         self.trace_path = Path(trace_path) if trace_path else None
+        self.prompt_plugins = merged_prompt_plugins(prompt_plugins)
         self._native_tools = [tool_schema(self.tool_map[tool_name]) for tool_name in self.tool_names]
         self._encoding = tiktoken.get_encoding("cl100k_base")
         self._native_tools_token_estimate = len(
@@ -377,9 +398,8 @@ class MultiTurnReactAgent:
         workspace_root = normalize_workspace_root(workspace_dir)
         start_time = time.time()
         trace_path = self.trace_path
-        system_prompt = SYSTEM_PROMPT
         cur_date = today_date()
-        system_prompt = system_prompt + str(cur_date)
+        system_prompt = composed_system_prompt(current_date=str(cur_date), plugin_names=self.prompt_plugins)
         user_content = (
             f"Current workspace directory: {workspace_root}\n"
             "Relative local file paths resolve from the workspace directory.\n\n"
@@ -621,12 +641,19 @@ class MultiTurnReactAgent:
         return f"Error: Tool {tool_name} not found"
 
 
-def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str]]:
+def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], list[str]]:
     parser = argparse.ArgumentParser(description="Run the local agent directly from agent_base.react_agent.")
     parser.add_argument("question", nargs="*", help="User request text.")
     parser.add_argument("--question-file", help="Optional UTF-8 text file containing the user request.")
     parser.add_argument("--save-path", help="Optional JSONL trace output path.")
     parser.add_argument("--workspace-dir", help="Optional workspace directory for Bash and TerminalStart.")
+    parser.add_argument(
+        "--prompt-plugin",
+        action="append",
+        default=[],
+        dest="prompt_plugins",
+        help="Optional prompt plugin name. May be passed multiple times. Example: --prompt-plugin academic_research",
+    )
     args = parser.parse_args(argv)
 
     user_request = ""
@@ -637,14 +664,14 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str]]
 
     if not user_request:
         raise ValueError("A non-empty question is required via positional args or --question-file.")
-    return user_request, args.save_path, args.workspace_dir
+    return user_request, args.save_path, args.workspace_dir, args.prompt_plugins
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     try:
-        user_request, save_path, workspace_dir = _parse_cli_args(argv or sys.argv[1:])
-        agent = build_default_agent(trace_path=save_path)
+        user_request, save_path, workspace_dir, prompt_plugins = _parse_cli_args(argv or sys.argv[1:])
+        agent = build_default_agent(trace_path=save_path, prompt_plugins=prompt_plugins)
         workspace_root = normalize_workspace_root(workspace_dir)
         printer = ConsoleEventPrinter(
             model_name=agent.model,

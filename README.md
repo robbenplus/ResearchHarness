@@ -135,6 +135,7 @@ Important variables:
 - `SERPER_KEY_ID`
 - `JINA_API_KEYS`
 - `MINERU_TOKEN`
+- `PROMPT_PLUGINS` (optional, comma-separated prompt plugin names)
 
 Minimal example:
 
@@ -151,6 +152,33 @@ Capability-specific requirements:
 - `WebSearch` / `ScholarSearch` require `SERPER_KEY_ID`
 - `WebFetch` requires `JINA_API_KEYS`
 - `ReadPDF` requires `MINERU_TOKEN` and `structai`
+
+### 2.5 Optional Prompt Plugins
+
+The harness keeps the base system prompt general-purpose. Domain-specific behavior can be added through prompt plugins.
+
+Current built-in plugin:
+
+- `academic_research` — adds stronger guidance for literature survey, idea generation, experiment design, iterative phase gates, persistent research state, and evidence-grounded reporting
+
+Enable via environment variable:
+
+```env
+PROMPT_PLUGINS=academic_research
+```
+
+Or enable per run:
+
+```bash
+python3 -m agent_base.react_agent "your question" --prompt-plugin academic_research
+```
+
+Inspect available plugins:
+
+```bash
+python3 -m agent_base.prompt --list-plugins
+python3 -m agent_base.prompt --show-plugin academic_research
+```
 
 ### 3. Run
 
@@ -170,6 +198,14 @@ Use an explicit workspace:
 
 ```bash
 python3 -m agent_base.react_agent "summarize this project" --workspace-dir /path/to/workspace
+```
+
+Run with the academic research prompt plugin:
+
+```bash
+python3 -m agent_base.react_agent "investigate this research task" \
+  --workspace-dir /path/to/workspace \
+  --prompt-plugin academic_research
 ```
 
 ---
