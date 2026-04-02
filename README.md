@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🔬 ResearcherHarness
+# 🔬 ResearchHarness
 
-**A trusted-local harness for research agents, real tool use, real regressions, and training-data collection.**
+**A trusted-local harness for research agents with real tool use, end-to-end evaluation, and training-data collection.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -12,14 +12,14 @@
 
 </div>
 
-ResearcherHarness is a compact harness for running a tool-using LLM against real local and web tasks. It is built for **agent execution**, **regression testing**, and **training-data collection**.
+ResearchHarness is a compact harness for running a tool-using LLM against real local and web tasks. It is built for **agent execution**, **end-to-end evaluation**, and **training-data collection**.
 
 Unlike large agent platforms, this project is intentionally centered on:
 
 - real tools instead of mocked capabilities
 - a deterministic public interface
 - readable CLI execution
-- repeatable end-to-end regressions
+- repeatable end-to-end evaluation
 - flat traces that can be directly turned into SFT-style training data
 
 The point is not to build a giant orchestration layer. The point is to keep a **small, inspectable harness** that is easy to run, easy to debug, and easy to train from.
@@ -55,18 +55,18 @@ The point is not to build a giant orchestration layer. The point is to keep a **
   File discovery, file reads, PDF reads, image inspection, shell execution, and persistent terminal sessions are all available.
 - **Training-friendly traces**
   Runs are recorded as a flat JSONL event stream that can be directly reused to collect supervised training data.
-- **Real end-to-end regressions**
+- **End-to-end evaluation**
   The repo validates actual multi-step agent behavior, not just isolated tool calls.
 - **PDF-to-figure workflow**
   `ReadPDF` can expose extracted image paths, and `ReadImage` can inspect the actual extracted figure file.
 
 ### At a Glance
 
-| Area | What ResearcherHarness focuses on |
+| Area | What ResearchHarness focuses on |
 | --- | --- |
 | Runtime | Small native tool-calling harness loop |
 | Local work | Workspace-first file and shell operations |
-| Evaluation | Real end-to-end regressions |
+| Evaluation | Repeatable end-to-end evaluation |
 | Data | Flat JSONL traces for training-data collection |
 | Deployment model | Trusted-local, not public-safe |
 
@@ -74,13 +74,13 @@ The point is not to build a giant orchestration layer. The point is to keep a **
 
 ## 🧭 Scope
 
-ResearcherHarness is a **trusted-local harness** for research agents.
+ResearchHarness is a **trusted-local harness** for research agents.
 
 It is suitable for:
 
 - local research workflows
 - tool-use evaluation
-- agent regression testing
+- agent evaluation
 - trace collection for training
 - controlled internal experimentation
 
@@ -176,7 +176,7 @@ python3 -m agent_base.react_agent "summarize this project" --workspace-dir /path
 
 ## 🧠 How It Works
 
-ResearcherHarness follows a deliberately simple harness loop:
+ResearchHarness follows a deliberately simple harness loop:
 
 ```mermaid
 flowchart TD
@@ -252,7 +252,7 @@ More detailed tool documentation lives in [agent_base/tools/README.md](agent_bas
 
 ```mermaid
 mindmap
-  root((ResearcherHarness Tools))
+  root((ResearchHarness Tools))
     Web
       WebSearch
       ScholarSearch
@@ -356,12 +356,12 @@ In practice, this means the harness can be used not only to run agents, but also
 
 ## 🧪 Testing
 
-The harness includes both tool-level checks and real end-to-end agent regressions.
+The harness includes both tool-level checks and end-to-end agent tests.
 
 Test scripts default to the current interpreter. If you want child processes to use a specific interpreter, set:
 
 ```bash
-RESEARCHERHARNESS_TEST_PYTHON="/path/to/your/python"
+RESEARCHHARNESS_TEST_PYTHON="/path/to/your/python"
 ```
 
 ### Tool availability
@@ -382,31 +382,31 @@ python3 test/test_local_tools_validation.py
 python3 test/test_toolchain_validation.py
 ```
 
-### End-to-end multi-tool regression
+### End-to-end multi-tool test
 
 ```bash
 python3 test/test_end_to_end_multitool.py
 ```
 
-### End-to-end local file discovery regression
+### End-to-end local file discovery test
 
 ```bash
 python3 test/test_end_to_end_glob_grep.py
 ```
 
-### End-to-end write/edit regression
+### End-to-end write/edit test
 
 ```bash
 python3 test/test_end_to_end_write_edit.py
 ```
 
-### End-to-end terminal-session regression
+### End-to-end terminal-session test
 
 ```bash
 python3 test/test_end_to_end_terminal.py
 ```
 
-### End-to-end online PDF first-figure regression
+### End-to-end online PDF first-figure test
 
 ```bash
 python3 test/test_end_to_end_pdf_image.py
@@ -456,7 +456,7 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 - This repository is **not sandboxed**
 - `ReadPDF` depends on `structai` and `MINERU_TOKEN`
 - `ReadImage` currently sends compressed local images as inline `data:` URLs through standard `image_url` request parts
-- Real LLM behavior is still the least deterministic part of the system, even with native tool calling and regression coverage
+- Real LLM behavior is still the least deterministic part of the system, even with native tool calling and test coverage
 
 ---
 

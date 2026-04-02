@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from test_support import TEST_RUNS_DIR, bootstrap, preview
 
 
-TMP_DIR = TEST_RUNS_DIR / "edge_case_regressions"
+TMP_DIR = TEST_RUNS_DIR / "edge_case_checks"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
@@ -215,7 +215,7 @@ def main() -> int:
 
     result = EdgeCaseResult(
         status="PASS" if not failures else "FAIL",
-        detail="All edge-case regressions passed." if not failures else f"Failed checks: {', '.join(failures)}",
+        detail="All edge-case checks passed." if not failures else f"Failed checks: {', '.join(failures)}",
         output_preview=preview("\n\n".join(outputs)),
     )
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
