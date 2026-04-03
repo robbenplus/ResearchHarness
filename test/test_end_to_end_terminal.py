@@ -19,6 +19,7 @@ from test_support import (
     final_result_text,
     load_trace_records,
     preview,
+    single_trace_path,
     subprocess_python,
     training_trace_ok,
 )
@@ -26,8 +27,8 @@ from test_support import (
 
 QUESTION_FILE = ROOT / "test" / "cases" / "end_to_end_terminal.txt"
 RUN_DIR = TEST_RUNS_DIR / "end_to_end_terminal"
-RUN_WORKSPACE_DIR = RUN_DIR / "workspace"
-TRACE_PATH = RUN_DIR / "trace.jsonl"
+RUN_WORKSPACE_ROOT = RUN_DIR / "workspace"
+TRACE_DIR = RUN_DIR / "traces"
 RUN_TIMEOUT_SECONDS = 300
 REQUIRED_TOOL_NAMES = [
     "TerminalStart",
@@ -64,11 +65,11 @@ class AgentRunResult:
 
 def main() -> int:
     load_dotenv(ROOT / ".env")
-    user_request = QUESTION_FILE.read_text(encoding="utf-8").strip()
-    RUN_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if TRACE_PATH.exists():
-        TRACE_PATH.unlink()
+    prompt = QUESTION_FILE.read_text(encoding="utf-8").strip()
+    RUN_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    for existing_trace in TRACE_DIR.glob("*.jsonl"):
+        existing_trace.unlink()
 
     env = os.environ.copy()
     env["DEBUG_AGENT"] = "1"
@@ -79,7 +80,7 @@ def main() -> int:
     env["MAX_AGENT_RUNTIME_SECONDS"] = "240"
     env["LLM_MAX_RETRIES"] = "2"
     env["LLM_TIMEOUT_SECONDS"] = "120"
-    env["WORKSPACE_ROOT"] = str(RUN_WORKSPACE_DIR)
+    env["WORKSPACE_ROOT"] = str(RUN_WORKSPACE_ROOT)
 
     try:
         proc = subprocess.run(
@@ -87,11 +88,11 @@ def main() -> int:
             + [
                 "-m",
                 "agent_base.react_agent",
-                user_request,
-                "--workspace-dir",
-                str(RUN_WORKSPACE_DIR),
-                "--save-path",
-                str(TRACE_PATH),
+                prompt,
+                "--workspace-root",
+                str(RUN_WORKSPACE_ROOT),
+                "--trace-dir",
+                str(TRACE_DIR),
             ],
             cwd=ROOT,
             capture_output=True,
@@ -101,7 +102,8 @@ def main() -> int:
         )
     except subprocess.TimeoutExpired as exc:
         combined_output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
-        trace_rows = load_trace_records(TRACE_PATH)
+        trace_path = single_trace_path(TRACE_DIR)
+        trace_rows = load_trace_records(trace_path) if trace_path else []
         tool_names_seen = collect_tool_names(trace_rows)
         result = AgentRunResult(
             status="FAIL",
@@ -114,7 +116,8 @@ def main() -> int:
         return 1
 
     combined_output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-    trace_rows = load_trace_records(TRACE_PATH)
+    trace_path = single_trace_path(TRACE_DIR)
+    trace_rows = load_trace_records(trace_path) if trace_path else []
     tool_names_seen = collect_tool_names(trace_rows)
     distinct_tools_seen = sorted(set(tool_names_seen))
     tool_calls_seen = len(tool_names_seen)
@@ -144,7 +147,7 @@ def main() -> int:
             < tool_names_seen.index("TerminalKill")
         )
 
-    file_path = RUN_WORKSPACE_DIR / EXPECTED_FILE_NAME
+    file_path = RUN_WORKSPACE_ROOT / EXPECTED_FILE_NAME
     output_ok = False
     if isinstance(result_json, dict):
         observed_pwd = result_json.get("observed_pwd")
@@ -155,7 +158,7 @@ def main() -> int:
         session_closed = result_json.get("session_closed")
         output_ok = (
             file_name == EXPECTED_FILE_NAME
-            and observed_pwd == str(RUN_WORKSPACE_DIR)
+            and observed_pwd == str(RUN_WORKSPACE_ROOT)
             and isinstance(file_content, str)
             and file_content.strip() == EXPECTED_FILE_CONTENT
             and session_ready_seen is True
@@ -194,7 +197,7 @@ def main() -> int:
     if proc.returncode != 0:
         detail_parts.append(f"agent_base.react_agent exited with code {proc.returncode}")
     if not trace_rows:
-        detail_parts.append(f"trace not found: {TRACE_PATH}")
+        detail_parts.append(f"trace not found in directory: {TRACE_DIR}")
     if not required_tools_ok:
         detail_parts.append(f"required tools missing: expected {REQUIRED_TOOL_NAMES}, got {distinct_tools_seen}")
     if forbidden_tools_seen:

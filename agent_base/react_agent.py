@@ -41,6 +41,16 @@ AVAILABLE_TOOLS = [
 ]
 AVAILABLE_TOOL_MAP = {tool.name: tool for tool in AVAILABLE_TOOLS}
 DEFAULT_IMAGE_TOKEN_ESTIMATE = 1536
+DEFAULT_MODEL_NAME = "gpt-5.4"
+DEFAULT_MAX_LLM_CALLS = 100
+DEFAULT_MAX_RUNTIME_SECONDS = 150 * 60
+DEFAULT_MAX_OUTPUT_TOKENS = 10000
+DEFAULT_MAX_INPUT_TOKENS = 320000
+DEFAULT_MAX_RETRIES = 10
+DEFAULT_TEMPERATURE = 0.6
+DEFAULT_TOP_P = 0.95
+DEFAULT_PRESENCE_PENALTY = 1.1
+DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
 
 
 def today_date():
@@ -48,15 +58,15 @@ def today_date():
 
 
 def max_llm_calls_per_run() -> int:
-    return int(os.getenv("MAX_LLM_CALL_PER_RUN", "100"))
+    return int(os.getenv("MAX_LLM_CALL_PER_RUN", str(DEFAULT_MAX_LLM_CALLS)))
 
 
 def max_agent_runtime_seconds() -> int:
-    return int(os.getenv("MAX_AGENT_RUNTIME_SECONDS", str(150 * 60)))
+    return int(os.getenv("MAX_AGENT_RUNTIME_SECONDS", str(DEFAULT_MAX_RUNTIME_SECONDS)))
 
 
 def llm_max_output_tokens() -> int:
-    return int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "10000"))
+    return int(os.getenv("LLM_MAX_OUTPUT_TOKENS", str(DEFAULT_MAX_OUTPUT_TOKENS)))
 
 
 def remaining_runtime_seconds(runtime_deadline: Optional[float]) -> Optional[float]:
@@ -213,19 +223,19 @@ def image_context_trace_text(result: Any) -> str:
 
 
 def default_llm_config() -> dict:
-    model_name = os.environ.get("MODEL_NAME", os.environ.get("SUMMARY_MODEL_NAME", "gpt-5.4"))
+    model_name = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
     return {
         "model": model_name,
         "api_key": os.environ.get("API_KEY", "EMPTY"),
         "api_base": os.environ.get("API_BASE"),
-        "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", "600")),
+        "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS))),
         "generate_cfg": {
-            "max_input_tokens": int(os.environ.get("MAX_INPUT_TOKENS", "320000")),
-            "max_output_tokens": int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "10000")),
-            "max_retries": int(os.environ.get("LLM_MAX_RETRIES", "10")),
-            "temperature": float(os.environ.get("TEMPERATURE", "0.6")),
-            "top_p": float(os.environ.get("TOP_P", "0.95")),
-            "presence_penalty": float(os.environ.get("PRESENCE_PENALTY", "1.1")),
+            "max_input_tokens": int(os.environ.get("MAX_INPUT_TOKENS", str(DEFAULT_MAX_INPUT_TOKENS))),
+            "max_output_tokens": int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", str(DEFAULT_MAX_OUTPUT_TOKENS))),
+            "max_retries": int(os.environ.get("LLM_MAX_RETRIES", str(DEFAULT_MAX_RETRIES))),
+            "temperature": float(os.environ.get("TEMPERATURE", str(DEFAULT_TEMPERATURE))),
+            "top_p": float(os.environ.get("TOP_P", str(DEFAULT_TOP_P))),
+            "presence_penalty": float(os.environ.get("PRESENCE_PENALTY", str(DEFAULT_PRESENCE_PENALTY))),
         },
     }
 
@@ -241,7 +251,7 @@ def execute_tool_by_name(tool_map: dict[str, Any], tool_name: str, tool_args: An
 
 def build_default_agent(
     *,
-    trace_path: Optional[str] = None,
+    trace_dir: Optional[str] = None,
     function_list: Optional[List[str]] = None,
     role_prompt: Optional[str] = None,
     max_llm_calls: Optional[int] = None,
@@ -249,7 +259,7 @@ def build_default_agent(
 ) -> "MultiTurnReactAgent":
     return MultiTurnReactAgent(
         llm=default_llm_config(),
-        trace_path=trace_path,
+        trace_dir=trace_dir,
         function_list=function_list,
         role_prompt=role_prompt,
         max_llm_calls=max_llm_calls,
@@ -261,7 +271,7 @@ class MultiTurnReactAgent(BaseAgent):
         self,
         function_list: Optional[List[str]] = None,
         llm: Optional[Dict] = None,
-        trace_path: Optional[str] = None,
+        trace_dir: Optional[str] = None,
         role_prompt: Optional[str] = None,
         max_llm_calls: Optional[int] = None,
         max_runtime_seconds: Optional[int] = None,
@@ -283,7 +293,8 @@ class MultiTurnReactAgent(BaseAgent):
         self.tool_names = list(self.tool_map.keys())
         self.model = str(llm["model"])
         self.llm_generate_cfg = llm["generate_cfg"]
-        self.trace_path = Path(trace_path) if trace_path else None
+        self.trace_dir = Path(trace_dir) if trace_dir else None
+        self.trace_path: Optional[Path] = None
         self.role_prompt = self.resolve_role_prompt(role_prompt)
         self.max_llm_calls = int(max_llm_calls) if max_llm_calls is not None else max_llm_calls_per_run()
         self.max_runtime_seconds = (
@@ -294,7 +305,9 @@ class MultiTurnReactAgent(BaseAgent):
         self._native_tools_token_estimate = len(
             self._encoding.encode(json.dumps(self._native_tools, ensure_ascii=False))
         )
-        self._llm_timeout_seconds = float(llm.get("timeout_seconds", os.getenv("LLM_TIMEOUT_SECONDS", "600")))
+        self._llm_timeout_seconds = float(
+            llm.get("timeout_seconds", os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS)))
+        )
         self._llm_api_key = str(llm.get("api_key") or os.environ.get("API_KEY", "EMPTY"))
         api_base = str(llm.get("api_base") or os.environ.get("API_BASE", "")).strip()
         self._llm_api_base = api_base or None
@@ -410,31 +423,31 @@ class MultiTurnReactAgent(BaseAgent):
                 token_count += len(self._encoding.encode(json.dumps(tool_calls, ensure_ascii=False)))
         return token_count
 
-    def run(self, user_input: str, workspace_dir: Optional[str] = None) -> str:
-        """Run the agent on one user input and return only the final result text."""
-        return self._run_session(user_input, workspace_dir=workspace_dir)["result_text"]
+    def run(self, prompt: str, workspace_root: Optional[str] = None) -> str:
+        """Run the agent on one prompt and return only the final result text."""
+        return self._run_session(prompt, workspace_root=workspace_root)["result_text"]
 
     def _run_session(
         self,
-        user_input: str,
-        workspace_dir: Optional[str] = None,
+        prompt: str,
+        workspace_root: Optional[str] = None,
         event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> dict:
         """Internal execution path with trace data for tests and debugging."""
-        if not isinstance(user_input, str) or not user_input.strip():
-            raise ValueError("user_input must be a non-empty string.")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string.")
 
-        user_request = user_input.strip()
-        workspace_root = normalize_workspace_root(workspace_dir)
+        prompt_text = prompt.strip()
+        resolved_workspace_root = normalize_workspace_root(workspace_root)
         start_time = time.time()
-        trace_path = self.trace_path
+        trace_dir = self.trace_dir
         cur_date = today_date()
         extra_blocks = [self.role_prompt] if self.role_prompt else None
         system_prompt = composed_system_prompt(current_date=str(cur_date), extra_blocks=extra_blocks)
         user_content = (
-            f"Current workspace directory: {workspace_root}\n"
-            "Relative local file paths resolve from the workspace directory.\n\n"
-            f"User request:\n{user_request}"
+            f"Current workspace root: {resolved_workspace_root}\n"
+            "Relative local file paths resolve from the workspace root.\n\n"
+            f"Prompt:\n{prompt_text}"
         )
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
         max_llm_calls = self.max_llm_calls
@@ -443,11 +456,12 @@ class MultiTurnReactAgent(BaseAgent):
         num_llm_calls_available = max_llm_calls
         round_index = 0
         trace_writer = FlatTraceWriter(
-            path=trace_path,
+            trace_dir=trace_dir,
             model_name=self.model,
-            workspace_root=workspace_root,
+            workspace_root=resolved_workspace_root,
             on_event=event_callback,
         )
+        self.trace_path = trace_writer.path
 
         def finalize(result_text: str, termination: str, *, role: str = "runtime", error: str = "") -> dict[str, Any]:
             trace_writer.append(
@@ -458,7 +472,7 @@ class MultiTurnReactAgent(BaseAgent):
                 error=error,
             )
             return {
-                "user_request": user_request,
+                "prompt": prompt_text,
                 "messages": messages,
                 "result_text": result_text,
                 "termination": termination,
@@ -577,7 +591,7 @@ class MultiTurnReactAgent(BaseAgent):
                     result = self.custom_call_tool(
                         tool_name,
                         tool_arguments,
-                        workspace_root=workspace_root,
+                        workspace_root=resolved_workspace_root,
                         runtime_deadline=runtime_deadline,
                     )
                     tool_result_text = tool_result_message_content(result)
@@ -618,7 +632,7 @@ class MultiTurnReactAgent(BaseAgent):
                     termination=current_termination,
                 )
                 return {
-                    "user_request": user_request,
+                    "prompt": prompt_text,
                     "messages": messages,
                     "result_text": current_result_text,
                     "termination": current_termination,
@@ -677,10 +691,13 @@ def _read_role_prompt_files(paths: Iterable[str]) -> str:
 
 def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], str]:
     parser = argparse.ArgumentParser(description="Run the local agent directly from agent_base.react_agent.")
-    parser.add_argument("question", nargs="*", help="User request text.")
-    parser.add_argument("--question-file", help="Optional UTF-8 text file containing the user request.")
-    parser.add_argument("--save-path", help="Optional JSONL trace output path.")
-    parser.add_argument("--workspace-dir", help="Optional workspace directory for Bash and TerminalStart.")
+    parser.add_argument("prompt", nargs="*", help="Prompt text.")
+    parser.add_argument("--prompt-file", help="Optional UTF-8 text file containing the prompt.")
+    parser.add_argument("--trace-dir", help="Optional directory where the run trace JSONL should be created.")
+    parser.add_argument(
+        "--workspace-root",
+        help="Optional workspace root for local file tools, Bash, and TerminalStart.",
+    )
     parser.add_argument(
         "--role-prompt-file",
         action="append",
@@ -691,31 +708,31 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str],
     )
     args = parser.parse_args(argv)
 
-    user_request = ""
-    if args.question_file:
-        user_request = Path(args.question_file).read_text(encoding="utf-8").strip()
-    elif args.question:
-        user_request = " ".join(args.question).strip()
+    prompt_text = ""
+    if args.prompt_file:
+        prompt_text = Path(args.prompt_file).read_text(encoding="utf-8").strip()
+    elif args.prompt:
+        prompt_text = " ".join(args.prompt).strip()
 
-    if not user_request:
-        raise ValueError("A non-empty question is required via positional args or --question-file.")
+    if not prompt_text:
+        raise ValueError("A non-empty prompt is required via positional args or --prompt-file.")
     role_prompt = _read_role_prompt_files(args.role_prompt_files)
-    return user_request, args.save_path, args.workspace_dir, role_prompt
+    return prompt_text, args.trace_dir, args.workspace_root, role_prompt
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     try:
-        user_request, save_path, workspace_dir, role_prompt = _parse_cli_args(argv or sys.argv[1:])
-        agent = build_default_agent(trace_path=save_path, role_prompt=role_prompt or None)
-        workspace_root = normalize_workspace_root(workspace_dir)
+        prompt_text, trace_dir, workspace_root, role_prompt = _parse_cli_args(argv or sys.argv[1:])
+        agent = build_default_agent(trace_dir=trace_dir, role_prompt=role_prompt or None)
+        resolved_workspace_root = normalize_workspace_root(workspace_root)
         printer = ConsoleEventPrinter(
             model_name=agent.model,
-            workspace_root=workspace_root,
-            user_request=user_request,
+            workspace_root=resolved_workspace_root,
+            prompt=prompt_text,
         )
         printer.print_header()
-        agent._run_session(user_request, workspace_dir=workspace_dir, event_callback=printer.handle_event)
+        agent._run_session(prompt_text, workspace_root=workspace_root, event_callback=printer.handle_event)
         return 0
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

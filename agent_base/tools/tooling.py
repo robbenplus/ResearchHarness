@@ -282,12 +282,12 @@ class ToolBase:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect workspace and path resolution helpers.")
-    parser.add_argument("--workspace-dir", help="Optional workspace directory override for this invocation.")
+    parser.add_argument("--workspace-root", help="Optional workspace root override for this invocation.")
     parser.add_argument("--path", help="Optional path to resolve inside the workspace.")
     args = parser.parse_args(argv)
 
     load_dotenv(PROJECT_ROOT / ".env")
-    workspace_root = normalize_workspace_root(args.workspace_dir)
+    workspace_root = normalize_workspace_root(args.workspace_root)
     payload: dict[str, str] = {
         "project_root": str(PROJECT_ROOT),
         "workspace_root": str(workspace_root),

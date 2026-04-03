@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from test_support import TEST_RUNS_DIR, bootstrap, load_trace_records, preview
+from test_support import TEST_RUNS_DIR, bootstrap, load_trace_records, preview, single_trace_path
 
 
 TMP_DIR = TEST_RUNS_DIR / "agent_extension_checks"
@@ -30,9 +30,10 @@ def main() -> int:
     from agent_base.react_agent import MultiTurnReactAgent
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    trace_path = TMP_DIR / "judge_trace.jsonl"
-    if trace_path.exists():
-        trace_path.unlink()
+    trace_dir = TMP_DIR / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    for existing_trace in trace_dir.glob("*.jsonl"):
+        existing_trace.unlink()
 
     @agent_role(
         name="judge",
@@ -52,7 +53,7 @@ def main() -> int:
                         "presence_penalty": 0.0,
                     },
                 },
-                trace_path=str(trace_path),
+                trace_dir=str(trace_dir),
             )
             self.seen_messages = []
 
@@ -66,7 +67,10 @@ def main() -> int:
             }
 
     agent = DummyJudgeAgent()
-    session = agent._run_session("Review this artifact.", workspace_dir=str(TMP_DIR))
+    session = agent._run_session("Review this artifact.", workspace_root=str(TMP_DIR))
+    trace_path = single_trace_path(trace_dir)
+    if trace_path is None:
+        raise RuntimeError(f"Expected exactly one trace file in {trace_dir}")
     rows = load_trace_records(trace_path)
 
     system_message = agent.seen_messages[0]["content"] if agent.seen_messages else ""

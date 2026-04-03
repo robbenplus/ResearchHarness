@@ -60,5 +60,5 @@ class BaseAgent(ABC):
         return str(role_prompt or "").strip()
 
     @abstractmethod
-    def run(self, user_input: str, workspace_dir: Optional[str] = None):
+    def run(self, prompt: str, workspace_root: Optional[str] = None):
         raise NotImplementedError

@@ -20,6 +20,7 @@ from test_support import (
     final_result_text,
     load_trace_records,
     preview,
+    single_trace_path,
     subprocess_python,
     training_trace_ok,
 )
@@ -27,8 +28,8 @@ from test_support import (
 
 QUESTION_FILE = ROOT / "test" / "cases" / "end_to_end_pdf_image.txt"
 RUN_DIR = TEST_RUNS_DIR / "end_to_end_pdf_image"
-RUN_WORKSPACE_DIR = RUN_DIR / "workspace"
-TRACE_PATH = RUN_DIR / "trace.jsonl"
+RUN_WORKSPACE_ROOT = RUN_DIR / "workspace"
+TRACE_DIR = RUN_DIR / "traces"
 RUN_TIMEOUT_SECONDS = 420
 REQUIRED_TOOL_NAMES = ["Bash", "ReadPDF", "ReadImage"]
 REQUIRED_OUTPUT_KEYS = [
@@ -70,11 +71,11 @@ def collect_trace_issues(rows: list[dict]) -> list[str]:
 
 def main() -> int:
     load_dotenv(ROOT / ".env")
-    user_request = QUESTION_FILE.read_text(encoding="utf-8").strip()
-    RUN_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if TRACE_PATH.exists():
-        TRACE_PATH.unlink()
+    prompt = QUESTION_FILE.read_text(encoding="utf-8").strip()
+    RUN_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    for existing_trace in TRACE_DIR.glob("*.jsonl"):
+        existing_trace.unlink()
 
     env = os.environ.copy()
     env["DEBUG_AGENT"] = "1"
@@ -85,7 +86,7 @@ def main() -> int:
     env["MAX_AGENT_RUNTIME_SECONDS"] = "360"
     env["LLM_MAX_RETRIES"] = "2"
     env["LLM_TIMEOUT_SECONDS"] = "120"
-    env["WORKSPACE_ROOT"] = str(RUN_WORKSPACE_DIR)
+    env["WORKSPACE_ROOT"] = str(RUN_WORKSPACE_ROOT)
 
     try:
         proc = subprocess.run(
@@ -93,11 +94,11 @@ def main() -> int:
             + [
                 "-m",
                 "agent_base.react_agent",
-                user_request,
-                "--workspace-dir",
-                str(RUN_WORKSPACE_DIR),
-                "--save-path",
-                str(TRACE_PATH),
+                prompt,
+                "--workspace-root",
+                str(RUN_WORKSPACE_ROOT),
+                "--trace-dir",
+                str(TRACE_DIR),
             ],
             cwd=ROOT,
             capture_output=True,
@@ -107,7 +108,8 @@ def main() -> int:
         )
     except subprocess.TimeoutExpired as exc:
         combined_output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
-        trace_rows = load_trace_records(TRACE_PATH)
+        trace_path = single_trace_path(TRACE_DIR)
+        trace_rows = load_trace_records(trace_path) if trace_path else []
         tool_names_seen = collect_tool_names(trace_rows)
         result = AgentRunResult(
             status="FAIL",
@@ -120,7 +122,8 @@ def main() -> int:
         return 1
 
     combined_output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-    trace_rows = load_trace_records(TRACE_PATH)
+    trace_path = single_trace_path(TRACE_DIR)
+    trace_rows = load_trace_records(trace_path) if trace_path else []
     tool_names_seen = collect_tool_names(trace_rows)
     distinct_tools_seen = sorted(set(tool_names_seen))
     tool_calls_seen = len(tool_names_seen)
@@ -159,25 +162,25 @@ def main() -> int:
             local_pdf_path = (
                 raw_local_pdf_path
                 if raw_local_pdf_path.is_absolute()
-                else (RUN_WORKSPACE_DIR / raw_local_pdf_path).resolve()
+                else (RUN_WORKSPACE_ROOT / raw_local_pdf_path).resolve()
             )
             local_pdf_path_ok = (
                 local_pdf_path.exists()
                 and local_pdf_path.is_file()
                 and local_pdf_path.suffix.lower() == ".pdf"
-                and RUN_WORKSPACE_DIR in local_pdf_path.parents
+                and RUN_WORKSPACE_ROOT in local_pdf_path.parents
             )
         if isinstance(first_image_path_value, str) and first_image_path_value.strip():
             raw_first_image_path = Path(first_image_path_value)
             first_image_path = (
                 raw_first_image_path
                 if raw_first_image_path.is_absolute()
-                else (RUN_WORKSPACE_DIR / raw_first_image_path).resolve()
+                else (RUN_WORKSPACE_ROOT / raw_first_image_path).resolve()
             )
             first_image_path_ok = (
                 first_image_path.exists()
                 and first_image_path.is_file()
-                and RUN_WORKSPACE_DIR in first_image_path.parents
+                and RUN_WORKSPACE_ROOT in first_image_path.parents
             )
         if isinstance(figure_text_value, str):
             normalized_figure_text = normalize_text(figure_text_value)
@@ -214,7 +217,7 @@ def main() -> int:
     if proc.returncode != 0:
         detail_parts.append(f"agent_base.react_agent exited with code {proc.returncode}")
     if not trace_rows:
-        detail_parts.append(f"trace not found: {TRACE_PATH}")
+        detail_parts.append(f"trace not found in directory: {TRACE_DIR}")
     if not required_tools_ok:
         detail_parts.append(f"required tools missing: expected {REQUIRED_TOOL_NAMES}, got {distinct_tools_seen}")
     if not tool_order_ok:

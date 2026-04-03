@@ -30,16 +30,16 @@ class FlatTraceWriter:
     def __init__(
         self,
         *,
-        path: Optional[str | Path],
+        trace_dir: Optional[str | Path],
         model_name: str,
         workspace_root: str | Path,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ):
-        self.path = Path(path) if path else None
         self.model_name = model_name
         self.workspace_root = str(workspace_root)
         self.on_event = on_event
         self.run_id = uuid4().hex
+        self.path = resolve_trace_path(trace_dir, run_id=self.run_id) if trace_dir else None
         self.event_index = 0
 
     def append(
@@ -79,6 +79,20 @@ class FlatTraceWriter:
         if self.on_event is not None:
             self.on_event(row)
         return row
+
+
+def resolve_trace_path(
+    trace_dir: str | Path,
+    *,
+    run_id: str,
+    prefix: str = "trace",
+    suffix: str = ".jsonl",
+) -> Path:
+    directory = Path(trace_dir)
+    timestamp = datetime.datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    short_run_id = run_id[:12]
+    filename = f"{prefix}_{timestamp}_{short_run_id}{suffix}"
+    return directory / filename
 
 
 def main(argv: Optional[list[str]] = None) -> int:

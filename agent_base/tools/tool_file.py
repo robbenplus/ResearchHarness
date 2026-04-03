@@ -449,7 +449,7 @@ class Glob(ToolBase):
             },
             "path": {
                 "type": "string",
-                "description": "Optional search root. Defaults to the current workspace directory.",
+                "description": "Optional search root. Defaults to the current workspace root.",
             },
             "include_dirs": {
                 "type": "boolean",
@@ -540,7 +540,7 @@ class Grep(ToolBase):
             },
             "path": {
                 "type": "string",
-                "description": "Optional file or directory path to search. Defaults to the current workspace directory.",
+                "description": "Optional file or directory path to search. Defaults to the current workspace root.",
             },
             "glob": {
                 "type": "string",
@@ -875,11 +875,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     edit_parser.add_argument("path")
     edit_parser.add_argument("patch")
 
-    parser.add_argument("--workspace-dir", help="Optional workspace directory override.")
+    parser.add_argument("--workspace-root", help="Optional workspace root override.")
     args = parser.parse_args(argv)
 
     load_dotenv(PROJECT_ROOT / ".env")
-    workspace_dir = Path(args.workspace_dir).expanduser().resolve() if args.workspace_dir else None
+    workspace_root = Path(args.workspace_root).expanduser().resolve() if args.workspace_root else None
 
     if args.tool == "read":
         result = Read().call(
@@ -889,12 +889,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "end_line": args.end_line,
                 "max_chars": args.max_chars,
             },
-            workspace_root=workspace_dir,
+            workspace_root=workspace_root,
         )
     elif args.tool == "pdf":
-        result = ReadPDF().call({"path": args.path, "max_chars": args.max_chars}, workspace_root=workspace_dir)
+        result = ReadPDF().call({"path": args.path, "max_chars": args.max_chars}, workspace_root=workspace_root)
     elif args.tool == "image":
-        result = ReadImage().call({"path": args.path}, workspace_root=workspace_dir)
+        result = ReadImage().call({"path": args.path}, workspace_root=workspace_root)
     elif args.tool == "glob":
         result = Glob().call(
             {
@@ -903,7 +903,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "include_dirs": args.include_dirs,
                 "max_results": args.max_results,
             },
-            workspace_root=workspace_dir,
+            workspace_root=workspace_root,
         )
     elif args.tool == "grep":
         result = Grep().call(
@@ -915,15 +915,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "max_results": args.max_results,
                 "max_chars": args.max_chars,
             },
-            workspace_root=workspace_dir,
+            workspace_root=workspace_root,
         )
     elif args.tool == "write":
         result = Write().call(
             {"path": args.path, "content": args.content, "overwrite": args.overwrite},
-            workspace_root=workspace_dir,
+            workspace_root=workspace_root,
         )
     else:
-        result = Edit().call({"path": args.path, "patch": args.patch}, workspace_root=workspace_dir)
+        result = Edit().call({"path": args.path, "patch": args.patch}, workspace_root=workspace_root)
 
     print(result)
     return 0

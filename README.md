@@ -135,7 +135,6 @@ Important variables:
 - `API_BASE`
 - `MODEL_NAME`
 - `SUMMARY_MODEL_NAME`
-- `WORKSPACE_ROOT`
 - `SERPER_KEY_ID`
 - `JINA_API_KEYS`
 - `MINERU_TOKEN`
@@ -146,9 +145,10 @@ Minimal example:
 API_KEY=your_api_key
 API_BASE=https://your-openai-compatible-endpoint/v1
 MODEL_NAME=gpt-5.4
-SUMMARY_MODEL_NAME=gpt-5.4
-WORKSPACE_ROOT=./workspace
+# SUMMARY_MODEL_NAME=gpt-5.4
 ```
+
+Sampling defaults, retry policy, and runtime limits live in code. Override them programmatically when needed instead of storing them in `.env`.
 
 Capability-specific requirements:
 
@@ -178,20 +178,23 @@ python3 -m agent_base.react_agent "Who proposed the transformer architecture, an
 Save a trace:
 
 ```bash
-python3 -m agent_base.react_agent "your question" --save-path workspace/manual_runs/trace.jsonl
+python3 -m agent_base.react_agent "your prompt" --trace-dir workspace/manual_runs
 ```
+
+When a trace directory is provided, ResearchHarness creates a file named like
+`trace_YYYYMMDD_HHMMSS_<runid>.jsonl` inside that directory.
 
 Use an explicit workspace:
 
 ```bash
-python3 -m agent_base.react_agent "summarize this project" --workspace-dir /path/to/workspace
+python3 -m agent_base.react_agent "summarize this project" --workspace-root /path/to/workspace
 ```
 
 Run with one extra role-prompt file appended to the base prompt:
 
 ```bash
 python3 -m agent_base.react_agent "review this artifact" \
-  --workspace-dir /path/to/workspace \
+  --workspace-root /path/to/workspace \
   --role-prompt-file /path/to/role_prompt.md
 ```
 
@@ -215,16 +218,16 @@ flowchart TD
 The public harness API stays intentionally small:
 
 ```python
-result_text = agent.run(user_input, workspace_dir=None)
+result_text = agent.run(prompt, workspace_root=None)
 ```
 
 Properties:
 
-- `user_input`: the user request string
-- `workspace_dir`: optional workspace directory
+- `prompt`: the prompt string
+- `workspace_root`: optional workspace root
 - return value: exactly one final text string
 
-Model config, retry policy, trace path, and runtime controls are initialization-time settings, not `run(...)` arguments.
+Model config, retry policy, trace directory, and runtime controls are initialization-time settings, not `run(...)` arguments.
 
 ### 🖥 CLI Output
 
@@ -233,8 +236,8 @@ The CLI is not limited to a final one-line answer.
 During execution it prints:
 
 - model name
-- workspace path
-- user request
+- workspace root
+- prompt
 - per-round assistant output
 - tool calls
 - tool results
@@ -303,8 +306,8 @@ mindmap
 
 The harness uses a single workspace concept.
 
-- `WORKSPACE_ROOT` defines the default workspace
-- `run(..., workspace_dir=...)` overrides it for that run
+- `WORKSPACE_ROOT` defines the default workspace root when you want an environment-level default
+- `run(..., workspace_root=...)` overrides it for that run
 - relative local file paths resolve from the workspace
 - `Bash` and `TerminalStart` start from the workspace by default
 
@@ -367,7 +370,7 @@ Every row uses the same keys:
 The trace includes:
 
 - system prompt
-- user input
+- prompt
 - assistant tool-call turns
 - tool results
 - runtime-injected messages
@@ -510,7 +513,7 @@ The repository includes:
 - [LICENSE](LICENSE)
 - [.env.example](.env.example)
 - committed example files for tests
-- a committed workspace directory placeholder
+- a committed workspace placeholder
 
 ---
 

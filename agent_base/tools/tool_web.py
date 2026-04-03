@@ -14,6 +14,10 @@ from agent_base.prompt import EXTRACTOR_PROMPT
 from agent_base.tools.tooling import ToolBase
 from agent_base.utils import PROJECT_ROOT, env_flag, load_dotenv
 
+DEFAULT_SUMMARY_MODEL_NAME = "gpt-5.4"
+DEFAULT_WEBFETCH_TIMEOUT_SECONDS = 600.0
+DEFAULT_WEBFETCH_SUMMARY_TEMPERATURE = 0.0
+
 
 def search_debug_enabled() -> bool:
     return env_flag("DEBUG_SEARCH")
@@ -313,17 +317,31 @@ class WebFetch(ToolBase):
         super().__init__(cfg)
         self._summary_client: Optional[OpenAI] = None
         self._summary_api_base: Optional[str] = None
-        self._summary_model_name = os.environ.get("SUMMARY_MODEL_NAME", os.environ.get("MODEL_NAME", "gpt-5.4"))
-        self._summary_timeout_seconds = float(os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", "600")))
-        self._summary_temperature = float(os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", "0"))
+        self._summary_model_name = os.environ.get(
+            "SUMMARY_MODEL_NAME",
+            os.environ.get("MODEL_NAME", DEFAULT_SUMMARY_MODEL_NAME),
+        )
+        self._summary_timeout_seconds = float(
+            os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_WEBFETCH_TIMEOUT_SECONDS)))
+        )
+        self._summary_temperature = float(
+            os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", str(DEFAULT_WEBFETCH_SUMMARY_TEMPERATURE))
+        )
 
     def _ensure_summary_client(self) -> Optional[OpenAI]:
         if self._summary_client is not None:
             return self._summary_client
         self._summary_api_base = os.environ.get("API_BASE")
-        self._summary_model_name = os.environ.get("SUMMARY_MODEL_NAME", os.environ.get("MODEL_NAME", "gpt-5.4"))
-        self._summary_timeout_seconds = float(os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", "600")))
-        self._summary_temperature = float(os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", "0"))
+        self._summary_model_name = os.environ.get(
+            "SUMMARY_MODEL_NAME",
+            os.environ.get("MODEL_NAME", DEFAULT_SUMMARY_MODEL_NAME),
+        )
+        self._summary_timeout_seconds = float(
+            os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_WEBFETCH_TIMEOUT_SECONDS)))
+        )
+        self._summary_temperature = float(
+            os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", str(DEFAULT_WEBFETCH_SUMMARY_TEMPERATURE))
+        )
         if not self._summary_api_base:
             return None
         self._summary_client = OpenAI(

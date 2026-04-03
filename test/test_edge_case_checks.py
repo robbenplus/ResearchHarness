@@ -170,7 +170,7 @@ def check_agent_runtime_limit_on_tool_execution() -> tuple[bool, str]:
     try:
         agent = FakeAgent()
         started_at = time.time()
-        session = agent._run_session("trigger the slow bash tool", workspace_dir=str(case_dir))
+        session = agent._run_session("trigger the slow bash tool", workspace_root=str(case_dir))
         elapsed = time.time() - started_at
     finally:
         if previous_runtime is None:

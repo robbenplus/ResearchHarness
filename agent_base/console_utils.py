@@ -5,17 +5,17 @@ from typing import Any, Optional
 
 
 class ConsoleEventPrinter:
-    def __init__(self, *, model_name: str, workspace_root: Path, user_request: str):
+    def __init__(self, *, model_name: str, workspace_root: Path, prompt: str):
         self.model_name = model_name
         self.workspace_root = workspace_root
-        self.user_request = user_request.strip()
+        self.prompt = prompt.strip()
         self._last_round_printed: Optional[int] = None
 
     def print_header(self) -> None:
         print(f"Model: {self.model_name}")
-        print(f"Workspace: {self.workspace_root}")
-        print("User Request:")
-        print(self.user_request)
+        print(f"Workspace Root: {self.workspace_root}")
+        print("Prompt:")
+        print(self.prompt)
 
     def _print_round_header(self, turn_index: int) -> None:
         if turn_index <= 0 or self._last_round_printed == turn_index:
@@ -91,7 +91,7 @@ class ConsoleEventPrinter:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Show a minimal example of the CLI console event formatter.")
     parser.parse_args(argv)
-    printer = ConsoleEventPrinter(model_name="demo-model", workspace_root=Path("."), user_request="demo question")
+    printer = ConsoleEventPrinter(model_name="demo-model", workspace_root=Path("."), prompt="demo question")
     printer.print_header()
     printer.handle_event(
         {

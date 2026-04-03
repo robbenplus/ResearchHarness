@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
 from agent_base.utils import load_dotenv
 
 
-WORKSPACE_DIR = ROOT / "workspace"
-TEST_RUNS_DIR = WORKSPACE_DIR / "test_runs"
+WORKSPACE_ROOT = ROOT / "workspace"
+TEST_RUNS_DIR = WORKSPACE_ROOT / "test_runs"
 EXAMPLE_FILES_DIR = ROOT / "test" / "example_files"
 EXAMPLE_TEXT_FILES_DIR = EXAMPLE_FILES_DIR / "files"
 EXAMPLE_IMAGE_DIR = EXAMPLE_FILES_DIR / "images"
@@ -43,7 +43,7 @@ TRACE_REQUIRED_KEYS = {
 def bootstrap() -> None:
     load_dotenv(ROOT / ".env")
     os.environ["WORKSPACE_ROOT"] = str(ROOT)
-    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
@@ -66,6 +66,15 @@ def load_trace_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def single_trace_path(trace_dir: Path) -> Path | None:
+    if not trace_dir.exists():
+        return None
+    matches = sorted(trace_dir.glob("*.jsonl"))
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 def collect_tool_names(rows: list[dict]) -> list[str]:
@@ -159,7 +168,7 @@ def required_test_pdf() -> Path:
 def main() -> int:
     bootstrap()
     print(f"ROOT={ROOT}")
-    print(f"WORKSPACE_DIR={WORKSPACE_DIR}")
+    print(f"WORKSPACE_ROOT={WORKSPACE_ROOT}")
     print(f"TEST_RUNS_DIR={TEST_RUNS_DIR}")
     print(f"EXAMPLE_TEXT_FILES_DIR={EXAMPLE_TEXT_FILES_DIR}")
     print(f"structai_available={has_structai()}")

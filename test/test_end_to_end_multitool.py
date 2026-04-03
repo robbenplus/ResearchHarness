@@ -19,13 +19,14 @@ from test_support import (
     final_result_text,
     load_trace_records,
     preview,
+    single_trace_path,
     subprocess_python,
     training_trace_ok,
 )
 
 
 QUESTION_FILE = ROOT / "test" / "cases" / "end_to_end_multitool.txt"
-TRACE_PATH = TEST_RUNS_DIR / "end_to_end_multitool" / "trace.jsonl"
+TRACE_DIR = TEST_RUNS_DIR / "end_to_end_multitool" / "traces"
 RUN_TIMEOUT_SECONDS = 420
 REQUIRED_TOOL_NAMES = ["Read", "Bash", "ScholarSearch", "WebSearch", "WebFetch"]
 REQUIRED_OUTPUT_KEYS = [
@@ -62,8 +63,9 @@ class AgentRunResult:
     tool_calls_seen: int
     distinct_tools_seen: list[str]
     output_preview: str
-def load_trace(path: Path) -> tuple[list[dict], list[str]]:
-    records = load_trace_records(path)
+def load_trace(trace_dir: Path) -> tuple[list[dict], list[str]]:
+    trace_path = single_trace_path(trace_dir)
+    records = load_trace_records(trace_path) if trace_path else []
     return records, collect_tool_names(records)
 
 
@@ -86,10 +88,10 @@ def collect_trace_issues(rows: list[dict]) -> tuple[list[str], bool, bool]:
 
 def main() -> int:
     load_dotenv(ROOT / ".env")
-    user_request = QUESTION_FILE.read_text(encoding="utf-8").strip()
-    TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if TRACE_PATH.exists():
-        TRACE_PATH.unlink()
+    prompt = QUESTION_FILE.read_text(encoding="utf-8").strip()
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    for existing_trace in TRACE_DIR.glob("*.jsonl"):
+        existing_trace.unlink()
 
     env = os.environ.copy()
     env["DEBUG_AGENT"] = "1"
@@ -108,7 +110,7 @@ def main() -> int:
 
     try:
         proc = subprocess.run(
-            subprocess_python() + ["-m", "agent_base.react_agent", user_request, "--save-path", str(TRACE_PATH)],
+            subprocess_python() + ["-m", "agent_base.react_agent", prompt, "--trace-dir", str(TRACE_DIR)],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -117,7 +119,7 @@ def main() -> int:
         )
     except subprocess.TimeoutExpired as exc:
         combined_output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
-        trace_rows, tool_names_seen = load_trace(TRACE_PATH)
+        trace_rows, tool_names_seen = load_trace(TRACE_DIR)
         result = AgentRunResult(
             status="FAIL",
             detail=f"agent_base.react_agent timed out after {RUN_TIMEOUT_SECONDS} seconds",
@@ -129,7 +131,7 @@ def main() -> int:
         return 1
 
     combined_output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-    trace_rows, tool_names_seen = load_trace(TRACE_PATH)
+    trace_rows, tool_names_seen = load_trace(TRACE_DIR)
     distinct_tools_seen = sorted(set(tool_names_seen))
     tool_calls_seen = len(tool_names_seen)
     result_text = final_result_text(trace_rows)
@@ -205,7 +207,7 @@ def main() -> int:
     if proc.returncode != 0:
         detail_parts.append(f"agent_base.react_agent exited with code {proc.returncode}")
     if not trace_rows:
-        detail_parts.append(f"trace not found: {TRACE_PATH}")
+        detail_parts.append(f"trace not found in directory: {TRACE_DIR}")
     if tool_calls_seen < len(REQUIRED_TOOL_NAMES):
         detail_parts.append(f"tool call count too low: {tool_calls_seen} < {len(REQUIRED_TOOL_NAMES)}")
     if not required_tools_ok:

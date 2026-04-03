@@ -77,10 +77,10 @@ class Bash(ToolBase):
                 "type": "integer",
                 "description": "Timeout in seconds. Default is 30.",
             },
-            "workdir": {
-                "type": "string",
-                "description": "Optional working directory for the command. Defaults to the current workspace directory.",
-            },
+                "workdir": {
+                    "type": "string",
+                    "description": "Optional working directory for the command. Defaults to the current workspace root.",
+                },
         },
         "required": ["command"],
     }
@@ -348,10 +348,10 @@ class TerminalStart(ToolBase):
     parameters = {
         "type": "object",
         "properties": {
-            "cwd": {
-                "type": "string",
-                "description": "Optional working directory for the terminal session. Default is the current workspace directory.",
-            },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for the terminal session. Default is the current workspace root.",
+                },
             "shell": {
                 "type": "string",
                 "description": "Optional shell executable path. Default is bash.",
@@ -648,12 +648,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     load_dotenv(PROJECT_ROOT / ".env")
-    workspace_dir = Path(args.workdir).expanduser().resolve() if getattr(args, "workdir", None) else None
+    workdir_root = Path(args.workdir).expanduser().resolve() if getattr(args, "workdir", None) else None
 
     if args.tool == "bash":
         result = Bash().call(
             {"command": args.command, "timeout": args.timeout, "workdir": args.workdir},
-            workspace_root=workspace_dir,
+            workspace_root=workdir_root,
         )
         print(result)
         return 0
