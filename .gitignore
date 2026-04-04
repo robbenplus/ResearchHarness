@@ -2,6 +2,7 @@
 AGENTS.md
 workspace/*
 !workspace/.gitkeep
+data/
 .idea/
 .vscode/
 .DS_Store

@@ -195,6 +195,103 @@ def check_agent_runtime_limit_on_tool_execution() -> tuple[bool, str]:
     return ok, detail
 
 
+def check_parallel_readimage_tool_message_order() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "parallel_readimage_tool_messages"
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["ReadImage"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.seen_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self.seen_messages = msgs
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_img_1",
+                            "type": "function",
+                            "function": {
+                                "name": "ReadImage",
+                                "arguments": json.dumps({"path": "img1.jpg"}),
+                            },
+                        },
+                        {
+                            "id": "call_img_2",
+                            "type": "function",
+                            "function": {
+                                "name": "ReadImage",
+                                "arguments": json.dumps({"path": "img2.jpg"}),
+                            },
+                        },
+                        {
+                            "id": "call_img_3",
+                            "type": "function",
+                            "function": {
+                                "name": "ReadImage",
+                                "arguments": json.dumps({"path": "img3.jpg"}),
+                            },
+                        },
+                    ],
+                }
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            path = tool_args["path"] if isinstance(tool_args, dict) else "unknown"
+            return {
+                "kind": "image_tool_result",
+                "text": f"path: {path}\nllm_image_attached: true",
+                "path": str(case_dir / path),
+                "image_url": "data:image/jpeg;base64,ZmFrZQ==",
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("inspect three images", workspace_root=str(case_dir))
+    roles_after_assistant = [msg.get("role") for msg in agent.seen_messages[2:]]
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "roles_after_assistant": roles_after_assistant,
+            "messages_seen": agent.seen_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and roles_after_assistant[:7] == ["assistant", "tool", "tool", "tool", "user", "user", "user"]
+        and roles_after_assistant[-1] == "assistant"
+    )
+    return ok, detail
+
+
 def main() -> int:
     bootstrap()
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -203,6 +300,7 @@ def main() -> int:
         ("ReadPDF relative image path", check_readpdf_relative_image_path),
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
+        ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
     ]
 
     failures: list[str] = []

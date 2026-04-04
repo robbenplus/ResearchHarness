@@ -563,6 +563,7 @@ class MultiTurnReactAgent(BaseAgent):
                     "tool_calls": assistant_tool_calls,
                 }
                 messages.append(assistant_message)
+                deferred_image_contexts: list[tuple[str, str, Any, Any, dict[str, Any]]] = []
                 for tool_call, tool_arguments in zip(assistant_tool_calls, assistant_tool_arguments):
                     if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                         result_text = "No result found before the maximum agent runtime limit."
@@ -589,16 +590,18 @@ class MultiTurnReactAgent(BaseAgent):
                     )
                     extra_image_context = image_context_message(result)
                     if extra_image_context is not None:
-                        messages.append(extra_image_context)
-                        trace_writer.append(
-                            role="user",
-                            text=image_context_trace_text(result),
-                            turn_index=round_index,
-                            tool_call_ids=[tool_call_id],
-                            tool_names=[tool_name],
-                            tool_arguments=[tool_arguments],
-                            image_paths=image_trace_paths(result),
-                        )
+                        deferred_image_contexts.append((tool_call_id, tool_name, tool_arguments, result, extra_image_context))
+                for tool_call_id, tool_name, tool_arguments, result, extra_image_context in deferred_image_contexts:
+                    messages.append(extra_image_context)
+                    trace_writer.append(
+                        role="user",
+                        text=image_context_trace_text(result),
+                        turn_index=round_index,
+                        tool_call_ids=[tool_call_id],
+                        tool_names=[tool_name],
+                        tool_arguments=[tool_arguments],
+                        image_paths=image_trace_paths(result),
+                    )
                     if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                         result_text = "No result found before the maximum agent runtime limit."
                         termination = f"agent runtime limit reached: {agent_runtime_limit}s"
