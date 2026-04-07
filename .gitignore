@@ -3,6 +3,7 @@ AGENTS.md
 workspace/*
 !workspace/.gitkeep
 data/
+benchmarks/**/local_*.py
 .idea/
 .vscode/
 .DS_Store

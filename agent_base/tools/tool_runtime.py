@@ -29,6 +29,7 @@ from agent_base.tools.tooling import (
 DEFAULT_BUFFER_LIMIT = 200000
 DEFAULT_OUTPUT_CHARS = 20000
 DEFAULT_YIELD_MS = 200
+REPEAT_COLLAPSE_THRESHOLD = 3
 
 def _default_shell() -> str:
     return shutil.which("bash") or "/bin/bash"
@@ -59,6 +60,46 @@ def _disable_echo(fd: int) -> None:
         return
 
 
+def _collapse_repeated_lines(text: str, *, threshold: int = REPEAT_COLLAPSE_THRESHOLD) -> str:
+    if not text:
+        return text
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+    collapsed: list[str] = []
+    current = lines[0]
+    count = 1
+    for line in lines[1:]:
+        if line == current:
+            count += 1
+            continue
+        if count >= threshold:
+            collapsed.append(current)
+            collapsed.append(f"[previous line repeated {count - 1} additional times]\n")
+        else:
+            collapsed.extend([current] * count)
+        current = line
+        count = 1
+    if count >= threshold:
+        collapsed.append(current)
+        collapsed.append(f"[previous line repeated {count - 1} additional times]\n")
+    else:
+        collapsed.extend([current] * count)
+    return "".join(collapsed)
+
+
+def _bounded_output(text: str, *, max_output_chars: int = DEFAULT_OUTPUT_CHARS) -> str:
+    if not text:
+        return text
+    compressed = _collapse_repeated_lines(text)
+    if len(compressed) <= max_output_chars:
+        return compressed
+    omitted = len(compressed) - max_output_chars
+    suffix = f"\n[output truncated: omitted {omitted} chars]\n"
+    keep = max(0, max_output_chars - len(suffix))
+    return compressed[:keep] + suffix
+
+
 class Bash(ToolBase):
     name = "Bash"
     description = (
@@ -77,10 +118,14 @@ class Bash(ToolBase):
                 "type": "integer",
                 "description": "Timeout in seconds. Default is 30.",
             },
-                "workdir": {
-                    "type": "string",
-                    "description": "Optional working directory for the command. Defaults to the current workspace root.",
-                },
+            "workdir": {
+                "type": "string",
+                "description": "Optional working directory for the command. Defaults to the current workspace root.",
+            },
+            "max_output_chars": {
+                "type": "integer",
+                "description": f"Maximum combined stdout/stderr characters returned after repeated-line compression. Default is {DEFAULT_OUTPUT_CHARS}.",
+            },
         },
         "required": ["command"],
     }
@@ -100,8 +145,9 @@ class Bash(ToolBase):
         workdir = params.get("workdir")
         try:
             timeout = int(params.get("timeout", 30))
+            max_output_chars = int(params.get("max_output_chars", DEFAULT_OUTPUT_CHARS))
         except (TypeError, ValueError):
-            return "[Bash] timeout must be an integer."
+            return "[Bash] timeout and max_output_chars must be integers."
 
         issue = command_safety_issue(str(command))
         if issue:
@@ -117,6 +163,8 @@ class Bash(ToolBase):
             return f"[Bash] Working directory is not a directory: {cwd}"
         if timeout <= 0:
             return "[Bash] timeout must be > 0."
+        if max_output_chars <= 0:
+            return "[Bash] max_output_chars must be > 0."
 
         effective_timeout: float = float(timeout)
         if runtime_deadline is not None:
@@ -142,10 +190,12 @@ class Bash(ToolBase):
             return f"[Bash] Error executing command: {exc}"
 
         parts = [f"exit_code: {proc.returncode}"]
-        if proc.stdout:
-            parts.append(f"stdout:\n{proc.stdout}")
-        if proc.stderr:
-            parts.append(f"stderr:\n{proc.stderr}")
+        stdout = _bounded_output(proc.stdout, max_output_chars=max_output_chars)
+        stderr = _bounded_output(proc.stderr, max_output_chars=max_output_chars)
+        if stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
         return "\n".join(parts)
 
 class TerminalSession:

@@ -169,7 +169,13 @@ python3 -m agent_base.prompt --show-system
 
 ### 3. Run
 
-Run the agent directly:
+Run the agent directly through the thin top-level entrypoint:
+
+```bash
+python3 run_agent.py "Who proposed the transformer architecture, and in what year was the paper published?"
+```
+
+The original module entrypoint also remains available:
 
 ```bash
 python3 -m agent_base.react_agent "Who proposed the transformer architecture, and in what year was the paper published?"
@@ -446,11 +452,17 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 
 ### Core runtime
 
+- [run_agent.py](run_agent.py)
 - [agent_base/react_agent.py](agent_base/react_agent.py)
 - [agent_base/base.py](agent_base/base.py)
 - [agent_base/prompt.py](agent_base/prompt.py)
 - [agent_base/trace_utils.py](agent_base/trace_utils.py)
 - [agent_base/console_utils.py](agent_base/console_utils.py)
+
+### Benchmark integration
+
+- [benchmarks/README.md](benchmarks/README.md)
+- [benchmarks/](benchmarks)
 
 ### Tools
 

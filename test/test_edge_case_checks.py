@@ -292,6 +292,32 @@ def check_parallel_readimage_tool_message_order() -> tuple[bool, str]:
     return ok, detail
 
 
+def check_bash_output_bounding_and_repeat_collapse() -> tuple[bool, str]:
+    from agent_base.tools.tool_runtime import Bash
+
+    case_dir = TMP_DIR / "bash_output_bounding"
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    command = "for i in $(seq 1 20); do echo WARN; done; printf 'A%.0s' $(seq 1 500)"
+    result = Bash().call(
+        {
+            "command": command,
+            "timeout": 10,
+            "max_output_chars": 140,
+        },
+        workspace_root=case_dir,
+    )
+
+    ok = (
+        isinstance(result, str)
+        and "exit_code: 0" in result
+        and "previous line repeated" in result
+        and "output truncated" in result
+        and result.count("WARN\n") == 1
+    )
+    return ok, result
+
+
 def main() -> int:
     bootstrap()
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -301,6 +327,7 @@ def main() -> int:
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
+        ("Bash output bounding", check_bash_output_bounding_and_repeat_collapse),
     ]
 
     failures: list[str] = []
