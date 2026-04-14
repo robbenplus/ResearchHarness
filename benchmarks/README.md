@@ -5,7 +5,7 @@ This folder records benchmark-specific integration documents that live
 
 | Benchmark | Directory | Tracked contract |
 | --- | --- | --- |
-| ResearchClawBench | `benchmarks/ResearchClawBench/` | `README.md` + `role_prompt.md` |
+| ResearchClawBench | `benchmarks/ResearchClawBench/` | `README.md` + `role_prompt.md` + `adapter.py` |
 
 ## Notes
 

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import types
@@ -292,6 +293,145 @@ def check_parallel_readimage_tool_message_order() -> tuple[bool, str]:
     return ok, detail
 
 
+def check_plaintext_result_requires_completion_artifact() -> tuple[bool, str]:
+    from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
+
+    case_dir = TMP_DIR / "plaintext_result_requires_artifact"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(ResearchClawBenchAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+                max_rounds=5,
+            )
+            self._turn = 0
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "stop",
+                    "content": "Now I will start the experiment.",
+                    "tool_calls": [],
+                }
+            if self._turn == 2:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_write_report",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "report/report.md",
+                                        "content": "# Report\n\nFinished.\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "Finished. The report is saved at report/report.md.",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Complete the benchmark task", workspace_root=str(case_dir))
+    report_path = case_dir / "report" / "report.md"
+    assistant_messages = [msg for msg in session.get("messages", []) if msg.get("role") == "assistant"]
+    user_messages = [msg for msg in session.get("messages", []) if msg.get("role") == "user"]
+
+    detail = json.dumps(
+        {
+            "turns": agent._turn,
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "report_exists": report_path.exists(),
+            "assistant_messages": assistant_messages,
+            "user_messages": user_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        agent._turn == 3
+        and session.get("termination") == "result"
+        and report_path.exists()
+        and any("report/report.md" in str(msg.get("content", "")) for msg in user_messages[1:])
+    )
+    return ok, detail
+
+
+def check_plaintext_result_rejection_hits_max_rounds() -> tuple[bool, str]:
+    from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
+
+    case_dir = TMP_DIR / "plaintext_result_max_rounds"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(ResearchClawBenchAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+                max_rounds=2,
+            )
+            self._turn = 0
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": f"Round {self._turn}: still thinking.",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Keep going until max rounds", workspace_root=str(case_dir))
+    detail = json.dumps(
+        {
+            "turns": agent._turn,
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "messages": session.get("messages"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = agent._turn == 2 and session.get("termination") == "exceed available rounds"
+    return ok, detail
+
+
 def check_bash_output_bounding_and_repeat_collapse() -> tuple[bool, str]:
     from agent_base.tools.tool_runtime import Bash
 
@@ -327,6 +467,8 @@ def main() -> int:
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
+        ("Plaintext result requires artifact", check_plaintext_result_requires_completion_artifact),
+        ("Plaintext result max rounds", check_plaintext_result_rejection_hits_max_rounds),
         ("Bash output bounding", check_bash_output_bounding_and_repeat_collapse),
     ]
 

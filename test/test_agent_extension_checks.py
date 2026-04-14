@@ -27,7 +27,8 @@ def main() -> int:
 
     from agent_base import agent_role
     from agent_base.prompt import SYSTEM_PROMPT
-    from agent_base.react_agent import MultiTurnReactAgent
+    from agent_base.react_agent import MultiTurnReactAgent, resolve_agent_class_for_role_prompt_files
+    from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     trace_dir = TMP_DIR / "traces"
@@ -74,6 +75,9 @@ def main() -> int:
     rows = load_trace_records(trace_path)
 
     system_message = agent.seen_messages[0]["content"] if agent.seen_messages else ""
+    rcb_prompt_path = ROOT / "benchmarks" / "ResearchClawBench" / "role_prompt.md"
+    resolved_default_cls = resolve_agent_class_for_role_prompt_files([])
+    resolved_rcb_cls = resolve_agent_class_for_role_prompt_files([str(rcb_prompt_path)])
     preview_text = preview(
         json.dumps(
             {
@@ -81,6 +85,8 @@ def main() -> int:
                 "result_text": session.get("result_text"),
                 "tool_names": agent.tool_names,
                 "trace_roles": [row.get("role") for row in rows],
+                "default_agent_class": resolved_default_cls.__name__,
+                "rcb_agent_class": resolved_rcb_cls.__name__,
                 "system_prompt_tail": system_message[-300:],
             },
             ensure_ascii=False,
@@ -96,6 +102,8 @@ def main() -> int:
         and session.get("result_text") == '{"overall_score": 8.5, "verdict": "good"}'
         and not any(row.get("role") == "tool" for row in rows)
         and any(row.get("termination") == "result" for row in rows)
+        and resolved_default_cls is MultiTurnReactAgent
+        and resolved_rcb_cls is ResearchClawBenchAgent
     )
 
     result = AgentExtensionResult(

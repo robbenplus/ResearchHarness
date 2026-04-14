@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 
 def _normalize_function_list(function_list: Optional[Iterable[str]]) -> Optional[list[str]]:
@@ -58,6 +58,39 @@ class BaseAgent(ABC):
         if role_prompt is None:
             role_prompt = getattr(cls, "default_role_prompt", "")
         return str(role_prompt or "").strip()
+
+    def should_accept_plaintext_result(
+        self,
+        *,
+        result_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> bool:
+        """
+        Decide whether a plain assistant text reply with no tool calls is terminal.
+
+        The default behavior preserves the original ResearchHarness semantics:
+        any meaningful assistant text without tool calls is accepted as the final
+        result. Upper layers may override this hook to require extra completion
+        artifacts before termination.
+        """
+
+        return True
+
+    def rejected_plaintext_result_message(
+        self,
+        *,
+        result_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> str:
+        """
+        Explain why a plain assistant text reply was not accepted as terminal.
+
+        Returning an empty string falls back to the generic runtime message.
+        """
+
+        return ""
 
     @abstractmethod
     def run(self, prompt: str, workspace_root: Optional[str] = None):

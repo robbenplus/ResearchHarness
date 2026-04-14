@@ -24,12 +24,15 @@ entrypoint.
 - `ResearchClawBench` already prepares the workspace, writes `INSTRUCTIONS.md`,
   and isolates hidden checklist data.
 - `ResearchHarness` should only execute the agent.
-- Benchmark-specific behavior is injected through `role_prompt.md`, not by
-  changing `agent_base`.
+- The command stays unchanged. The entrypoint automatically selects the
+  lightweight adapter in `benchmarks/ResearchClawBench/adapter.py` when this
+  benchmark role prompt is used.
 
 ## Notes
 
 - Replace `/abs/path/to/ResearchHarness/` with the real local checkout path.
 - The command should stay one-line and non-interactive.
+- The adapter prevents premature termination on long tasks by refusing to accept
+  plain-text completion before `report/report.md` exists in the workspace.
 - Any local batch helpers or ad hoc benchmark scripts should remain untracked
   and live outside the formal integration contract.

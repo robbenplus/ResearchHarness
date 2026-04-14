@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Type
 
 from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 import tiktoken
@@ -43,6 +43,7 @@ AVAILABLE_TOOL_MAP = {tool.name: tool for tool in AVAILABLE_TOOLS}
 DEFAULT_IMAGE_TOKEN_ESTIMATE = 1536
 DEFAULT_MODEL_NAME = "gpt-5.4"
 DEFAULT_MAX_LLM_CALLS = 100
+DEFAULT_MAX_ROUNDS = 100
 DEFAULT_MAX_RUNTIME_SECONDS = 150 * 60
 DEFAULT_MAX_OUTPUT_TOKENS = 10000
 DEFAULT_MAX_INPUT_TOKENS = 320000
@@ -59,6 +60,10 @@ def today_date():
 
 def max_llm_calls_per_run() -> int:
     return int(os.getenv("MAX_LLM_CALL_PER_RUN", str(DEFAULT_MAX_LLM_CALLS)))
+
+
+def max_agent_rounds() -> int:
+    return int(os.getenv("MAX_AGENT_ROUNDS", str(DEFAULT_MAX_ROUNDS)))
 
 
 def max_agent_runtime_seconds() -> int:
@@ -257,6 +262,7 @@ class MultiTurnReactAgent(BaseAgent):
         trace_dir: Optional[str] = None,
         role_prompt: Optional[str] = None,
         max_llm_calls: Optional[int] = None,
+        max_rounds: Optional[int] = None,
         max_runtime_seconds: Optional[int] = None,
     ):
         if not isinstance(llm, dict):
@@ -280,9 +286,12 @@ class MultiTurnReactAgent(BaseAgent):
         self.trace_path: Optional[Path] = None
         self.role_prompt = self.resolve_role_prompt(role_prompt)
         self.max_llm_calls = int(max_llm_calls) if max_llm_calls is not None else max_llm_calls_per_run()
+        self.max_rounds = int(max_rounds) if max_rounds is not None else max_agent_rounds()
         self.max_runtime_seconds = (
             int(max_runtime_seconds) if max_runtime_seconds is not None else max_agent_runtime_seconds()
         )
+        if self.max_rounds <= 0:
+            raise ValueError("max_rounds must be > 0.")
         self._native_tools = [tool_schema(self.tool_map[tool_name]) for tool_name in self.tool_names]
         self._encoding = tiktoken.get_encoding("cl100k_base")
         self._native_tools_token_estimate = len(
@@ -464,7 +473,7 @@ class MultiTurnReactAgent(BaseAgent):
         trace_writer.append(role="system", text=system_prompt, turn_index=0)
         trace_writer.append(role="user", text=user_content, turn_index=0)
 
-        while num_llm_calls_available > 0:
+        while num_llm_calls_available > 0 and round_index < self.max_rounds:
             if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                 result_text = "No result found before the maximum agent runtime limit."
                 termination = f"agent runtime limit reached: {agent_runtime_limit}s"
@@ -608,21 +617,48 @@ class MultiTurnReactAgent(BaseAgent):
                         return finalize(result_text, termination, error=termination)
             elif assistant_has_meaningful_text(assistant_content):
                 current_result_text = assistant_text.strip()
-                current_termination = "result"
                 messages.append({"role": "assistant", "content": current_result_text})
+                should_accept_result = self.should_accept_plaintext_result(
+                    result_text=current_result_text,
+                    workspace_root=resolved_workspace_root,
+                    messages=messages,
+                )
+                if should_accept_result:
+                    current_termination = "result"
+                    trace_writer.append(
+                        role="assistant",
+                        text=current_result_text,
+                        turn_index=round_index,
+                        finish_reason=finish_reason,
+                        termination=current_termination,
+                    )
+                    return {
+                        "prompt": prompt_text,
+                        "messages": messages,
+                        "result_text": current_result_text,
+                        "termination": current_termination,
+                    }
+                protocol_error = "plain result rejected by additional stop condition"
                 trace_writer.append(
                     role="assistant",
                     text=current_result_text,
                     turn_index=round_index,
                     finish_reason=finish_reason,
-                    termination=current_termination,
+                    error=protocol_error,
                 )
-                return {
-                    "prompt": prompt_text,
-                    "messages": messages,
-                    "result_text": current_result_text,
-                    "termination": current_termination,
-                }
+                correction_text = self.rejected_plaintext_result_message(
+                    result_text=current_result_text,
+                    workspace_root=resolved_workspace_root,
+                    messages=messages,
+                ).strip()
+                if not correction_text:
+                    correction_text = (
+                        "The previous assistant turn was not accepted as the final result because the additional stop condition returned false. "
+                        "Continue working. If the task is incomplete, use tool calls to produce the required artifacts before finishing."
+                    )
+                messages.append({"role": "user", "content": correction_text})
+                trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                continue
             else:
                 protocol_error = "assistant emitted empty response"
                 trace_writer.append(
@@ -659,7 +695,9 @@ class MultiTurnReactAgent(BaseAgent):
 
         result_text = 'No result found.'
         termination = 'result not found'
-        if num_llm_calls_available == 0:
+        if round_index >= self.max_rounds:
+            termination = 'exceed available rounds'
+        elif num_llm_calls_available == 0:
             termination = 'exceed available llm calls'
         return finalize(result_text, termination, error=termination)
 
@@ -675,7 +713,28 @@ def _read_role_prompt_files(paths: Iterable[str]) -> str:
     return "\n\n".join(block for block in blocks if block.strip())
 
 
-def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], str]:
+def _path_has_suffix(path: Path, suffix_parts: Sequence[str]) -> bool:
+    normalized_parts = tuple(part.casefold() for part in path.parts)
+    normalized_suffix = tuple(part.casefold() for part in suffix_parts)
+    if len(normalized_parts) < len(normalized_suffix):
+        return False
+    return normalized_parts[-len(normalized_suffix) :] == normalized_suffix
+
+
+def resolve_agent_class_for_role_prompt_files(role_prompt_files: Sequence[str]) -> Type[MultiTurnReactAgent]:
+    for raw_path in role_prompt_files:
+        path_text = str(raw_path).strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser().resolve(strict=False)
+        if _path_has_suffix(path, ("benchmarks", "ResearchClawBench", "role_prompt.md")):
+            from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
+
+            return ResearchClawBenchAgent
+    return MultiTurnReactAgent
+
+
+def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], str, list[str]]:
     parser = argparse.ArgumentParser(description="Run the local agent directly from agent_base.react_agent.")
     parser.add_argument("prompt", nargs="*", help="Prompt text.")
     parser.add_argument("--prompt-file", help="Optional UTF-8 text file containing the prompt.")
@@ -703,14 +762,21 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str],
     if not prompt_text:
         raise ValueError("A non-empty prompt is required via positional args or --prompt-file.")
     role_prompt = _read_role_prompt_files(args.role_prompt_files)
-    return prompt_text, args.trace_dir, args.workspace_root, role_prompt
+    return (
+        prompt_text,
+        args.trace_dir,
+        args.workspace_root,
+        role_prompt,
+        list(args.role_prompt_files),
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     try:
-        prompt_text, trace_dir, workspace_root, role_prompt = _parse_cli_args(argv or sys.argv[1:])
-        agent = MultiTurnReactAgent(
+        prompt_text, trace_dir, workspace_root, role_prompt, role_prompt_files = _parse_cli_args(argv or sys.argv[1:])
+        agent_cls = resolve_agent_class_for_role_prompt_files(role_prompt_files)
+        agent = agent_cls(
             llm=default_llm_config(),
             trace_dir=trace_dir,
             role_prompt=role_prompt or None,

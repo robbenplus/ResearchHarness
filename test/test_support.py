@@ -5,7 +5,14 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent.parent
+def _resolve_root() -> Path:
+    configured = os.getenv("RESEARCHHARNESS_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _resolve_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
