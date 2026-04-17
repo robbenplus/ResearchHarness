@@ -2,35 +2,34 @@
 
 # 🔬 ResearchHarness
 
-**A trusted-local harness for research agents with real tool use, end-to-end evaluation, and training-data collection.**
+**A lightweight, general-purpose harness for tool-using LLM agents.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Models](https://img.shields.io/badge/Models-GPT%20%7C%20Gemini%20%7C%20Qwen%20%7C%20GLM-0f766e.svg)](#-highlights)
 [![Upper Layer](https://img.shields.io/badge/Upper%20Layer-MarkScientist-2563eb.svg)](https://github.com/InternScience/MarkScientist)
 [![Runtime](https://img.shields.io/badge/Runtime-Native%20Tool%20Calling-4f46e5.svg)](#-how-it-works)
 [![Trace](https://img.shields.io/badge/Trace-Flat%20JSONL-0f766e.svg)](#-trace-format)
-[![Scope](https://img.shields.io/badge/Scope-Trusted%20Local-orange.svg)](#-scope)
+[![Benchmark](https://img.shields.io/badge/Benchmark-ResearchClawBench-f59e0b.svg)](https://github.com/InternScience/ResearchClawBench)
 
 </div>
 
-ResearchHarness is a compact harness for running a tool-using LLM against real local and web tasks. It is built for **agent execution**, **end-to-end evaluation**, and **training-data collection**.
+ResearchHarness is a foundational harness for running tool-using LLM agents on real local and web tasks. It is designed to be **general**, **stable**, **fair**, **lightweight**, and **feature-complete**.
 
-Unlike large agent platforms, this project is intentionally centered on:
+It serves three practical roles:
 
-- real tools instead of mocked capabilities
-- a deterministic public interface
-- readable CLI execution
-- repeatable end-to-end evaluation
-- flat traces that can be directly turned into SFT-style training data
+1. a **fair execution substrate for agent benchmarks** such as [ResearchClawBench](https://github.com/InternScience/ResearchClawBench)
+2. a **reference baseline and meta harness** for future harness optimization
+3. a **lightweight personal assistant runtime** for coding, file work, and report writing
 
-The point is not to build a giant orchestration layer. The point is to keep a **small, inspectable harness** that is easy to run, easy to debug, and easy to train from.
+The goal is not novelty for its own sake. The goal is to provide a small, inspectable agent harness that is easy to run, easy to compare, easy to extend, and easy to trust as infrastructure.
 
 ---
 
 ## 📚 Table of Contents
 
 - [✨ Highlights](#-highlights)
-- [🧭 Scope](#-scope)
+- [🧭 Positioning](#-positioning)
 - [⚡ Quick Start](#-quick-start)
 - [🧠 How It Works](#-how-it-works)
 - [🛠 Tool Surface](#-tool-surface)
@@ -48,16 +47,20 @@ The point is not to build a giant orchestration layer. The point is to keep a **
 
 - **Native tool calling**
   The harness uses OpenAI-compatible native tool calling instead of a custom text protocol.
-- **Harness-first design**
-  The project stays intentionally small: one main loop, a focused tool surface, readable CLI output, and flat traces.
+- **General model support**
+  The runtime is built around OpenAI-compatible chat-completions APIs, which makes it straightforward to use GPT, Gemini, Qwen, GLM, and other model families when exposed through that interface.
+- **Fair benchmark substrate**
+  The project is well-suited to benchmark evaluation because the runtime contract stays explicit, stable, and lightweight.
+- **Baseline and meta harness**
+  ResearchHarness can act as a reference baseline today and as the harness-under-test when you later optimize prompts, loop policies, tool behavior, or benchmark adapters.
+- **Lightweight but complete**
+  One main loop, a focused tool surface, readable CLI output, and flat traces cover real agent work without turning the repository into a large platform.
 - **Extensible agent base**
   Upper-layer frameworks can subclass the base ReAct agent and append role-specific prompt blocks without rewriting the execution loop.
 - **Workspace-first execution**
   Local paths, shell execution, and file discovery all start from one explicit workspace root.
-- **Strong local tools**
-  File discovery, file reads, PDF reads, image inspection, shell execution, and persistent terminal sessions are all available.
-- **Training-friendly traces**
-  Runs are recorded as a flat JSONL event stream that can be directly reused to collect supervised training data.
+- **Full tool surface**
+  File discovery, file reads, PDF reads, image inspection, shell execution, and persistent terminal sessions are all available in one compact runtime.
 - **End-to-end evaluation**
   The repo validates actual multi-step agent behavior, not just isolated tool calls.
 - **PDF-to-figure workflow**
@@ -67,44 +70,52 @@ The point is not to build a giant orchestration layer. The point is to keep a **
 
 | Area | What ResearchHarness focuses on |
 | --- | --- |
+| Positioning | Foundational harness, not a workflow platform |
+| Models | GPT, Gemini, Qwen, GLM, and other OpenAI-compatible LLMs |
 | Runtime | Small native tool-calling harness loop |
+| Evaluation | Repeatable and benchmark-friendly execution |
 | Extensibility | Base agent plus role-specific prompt addenda |
-| Local work | Workspace-first file and shell operations |
-| Evaluation | Repeatable end-to-end evaluation |
-| Data | Flat JSONL traces for training-data collection |
-| Deployment model | Trusted-local, not public-safe |
+| Personal use | Coding, file processing, report writing, and local agent work |
+| Data | Flat JSONL traces for debugging, replay, and optional training reuse |
 
 ---
 
-## 🧭 Scope
+## 🧭 Positioning
 
-ResearchHarness is a **trusted-local harness** for research agents.
+ResearchHarness should be understood as a **base harness**.
 
-It is suitable for:
+It is a good fit when you need:
 
-- local research workflows
-- tool-use evaluation
-- agent evaluation
-- trace collection for training
-- controlled internal experimentation
+- a common and fair runtime for benchmark evaluation
+- a compact baseline for harness research and optimization
+- a lightweight personal agent for day-to-day work
+- a readable execution loop with real tools and real artifacts
+- a stable interface that is easy to debug and compare
 
-It is **not** a public-safe sandboxed service.
-
-It is also intentionally **not** trying to be:
+It is intentionally **not** trying to be:
 
 - a large workflow engine
 - a multi-tenant serving platform
-- a kitchen-sink agent product
 - a deeply abstract orchestration framework
+- a kitchen-sink agent product
 
-The current tool surface intentionally includes strong local capabilities such as:
+Instead, it keeps the core contract small and concrete:
 
-- `Bash`
-- `Terminal*`
-- `Write`
-- `Edit`
+- one main ReAct loop
+- one explicit workspace root
+- one readable CLI entrypoint
+- one flat trace format
+- one focused but capable tool surface
 
-If you need a public deployment boundary, that should be added as a separate layer rather than assumed from this repository. This repo should be read as a **harness**, not a platform.
+If you need stricter security isolation or product-specific orchestration, those should be added as separate layers around the harness rather than folded into the core runtime.
+
+### Three Common Uses
+
+| Use | Why ResearchHarness fits |
+| --- | --- |
+| Fair benchmark base | It keeps the runtime contract explicit and lightweight, which is useful for benchmarks such as ResearchClawBench. |
+| Baseline and meta harness | It is small enough to inspect and modify, making it a practical reference baseline and an object of optimization itself. |
+| Personal assistant | It already includes file, shell, PDF, image, and report-oriented workflows, so it is useful outside benchmark settings too. |
 
 ---
 
@@ -128,6 +139,8 @@ python3 -m pip install -r requirements.txt
 ### 2. Configure
 
 Copy `.env.example` to `.env` and fill in the keys you need.
+
+ResearchHarness currently talks to OpenAI-compatible chat-completions APIs. In practice, that means GPT, Gemini, Qwen, GLM, and other model families can be used when they are exposed through a compatible endpoint.
 
 Important variables:
 
@@ -208,7 +221,7 @@ python3 -m agent_base.react_agent "review this artifact" \
 
 ## 🧠 How It Works
 
-ResearchHarness follows a deliberately simple harness loop:
+ResearchHarness follows a deliberately simple harness loop so that execution stays readable and benchmark behavior stays comparable:
 
 ```mermaid
 flowchart TD
@@ -370,7 +383,7 @@ Every row uses the same keys:
 
 - easier to replay
 - easier to diff
-- easier to turn into supervised training data
+- easier to inspect during evaluation and debugging
 - no secondary export format required
 
 The trace includes:
@@ -382,7 +395,7 @@ The trace includes:
 - runtime-injected messages
 - final assistant text
 
-In practice, this means the harness can be used not only to run agents, but also to **collect training data** from real tool-using trajectories.
+In practice, this means the harness can be used not only to run agents, but also to archive real tool-using trajectories for later analysis or optional training reuse.
 
 ---
 
@@ -492,9 +505,10 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 
 ## ⚠️ Known Boundaries
 
-- This repository is **not sandboxed**
+- This repository is a harness runtime, not a security product
 - `ReadPDF` depends on `structai` and `MINERU_TOKEN`
 - `ReadImage` currently sends compressed local images as inline `data:` URLs through standard `image_url` request parts
+- The runtime currently expects an OpenAI-compatible chat-completions endpoint
 - Real LLM behavior is still the least deterministic part of the system, even with native tool calling and test coverage
 
 ---

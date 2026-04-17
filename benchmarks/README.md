@@ -1,7 +1,8 @@
 # Benchmarks
 
-This folder records benchmark-specific integration documents that live
-**outside** `agent_base`.
+This folder records benchmark-specific integration contracts that live
+**outside** `agent_base` so the core harness stays generic, lightweight, and
+fair across different evaluations.
 
 | Benchmark | Directory | Tracked contract |
 | --- | --- | --- |
@@ -9,8 +10,8 @@ This folder records benchmark-specific integration documents that live
 
 ## Notes
 
-- `agent_base/` stays focused on the core runtime.
-- Benchmark-specific logic and prompts should live under their own benchmark
-  subdirectory.
+- `agent_base/` stays focused on the reusable harness runtime.
+- Benchmark-specific prompts, adapters, and integration notes should live under
+  their own benchmark subdirectory.
 - Local benchmark helpers may exist for private experimentation, but they do
   not define the formal external integration contract.

@@ -3,6 +3,10 @@
 This directory contains the tracked files needed to document how `ResearchHarness`
 should be integrated into `ResearchClawBench`.
 
+ResearchHarness is intended to serve here as a **general and fair execution
+substrate** for tool-using LLM evaluation, while `ResearchClawBench` remains in
+charge of task construction, hidden-answer isolation, and scoring.
+
 ## Recommended `agents.json` Entry
 
 Use a single direct command that launches the thin top-level ResearchHarness
@@ -23,7 +27,8 @@ entrypoint.
 
 - `ResearchClawBench` already prepares the workspace, writes `INSTRUCTIONS.md`,
   and isolates hidden checklist data.
-- `ResearchHarness` should only execute the agent.
+- `ResearchHarness` should only execute the agent through a stable harness
+  interface.
 - The command stays unchanged. The entrypoint automatically selects the
   lightweight adapter in `benchmarks/ResearchClawBench/adapter.py` when this
   benchmark role prompt is used.
