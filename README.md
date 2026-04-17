@@ -513,36 +513,6 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 
 ---
 
-## 📦 What Has Been Removed
-
-The repository has been intentionally narrowed to the current harness.
-
-Removed from the active code path:
-
-- remote Python sandbox integrations
-- Alibaba cloud document pipelines
-- video parsing paths
-- unrelated batch inference components
-- the older text-tag tool protocol in the main runtime path
-
----
-
-## 🌍 Open Source Notes
-
-- `.env` is ignored
-- runtime artifacts inside `workspace/` are ignored
-- traces are ignored unless you intentionally move them elsewhere
-- `AGENTS.md` is intentionally local-only
-
-The repository includes:
-
-- [LICENSE](LICENSE)
-- [.env.example](.env.example)
-- committed example files for tests
-- a committed workspace placeholder
-
----
-
 ## 🪪 License
 
 This project is released under the [MIT License](LICENSE).
