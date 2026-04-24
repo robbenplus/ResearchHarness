@@ -868,6 +868,146 @@ def check_bash_output_bounding_and_repeat_collapse() -> tuple[bool, str]:
     return ok, result
 
 
+def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    class FakeMessage:
+        content = "done"
+        tool_calls = None
+
+    class FakeClient:
+        def __init__(self):
+            self.request_kwargs = None
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def with_options(self, **kwargs):
+            return self
+
+        def create(self, **kwargs):
+            self.request_kwargs = kwargs
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        finish_reason="stop",
+                        message=FakeMessage(),
+                    )
+                ]
+            )
+
+    claude_agent = MultiTurnReactAgent(
+        function_list=[],
+        llm={
+            "model": "anthropic/claude-3-7-sonnet",
+            "api_base": "http://fake",
+            "api_key": "fake",
+            "generate_cfg": {
+                "max_input_tokens": 10000,
+                "max_output_tokens": 100,
+                "max_retries": 1,
+                "temperature": 0.2,
+                "top_p": 0.7,
+                "presence_penalty": 0.0,
+            },
+        },
+    )
+    claude_client = FakeClient()
+    claude_agent._llm_client = claude_client
+    claude_agent._llm_api_base = "http://fake"
+    claude_reply = claude_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
+
+    gpt_agent = MultiTurnReactAgent(
+        function_list=[],
+        llm={
+            "model": "gpt-5.4",
+            "api_base": "http://fake",
+            "api_key": "fake",
+            "generate_cfg": {
+                "max_input_tokens": 10000,
+                "max_output_tokens": 100,
+                "max_retries": 1,
+                "temperature": 0.2,
+                "top_p": 0.7,
+                "presence_penalty": 0.0,
+            },
+        },
+    )
+    gpt_client = FakeClient()
+    gpt_agent._llm_client = gpt_client
+    gpt_agent._llm_api_base = "http://fake"
+    gpt_reply = gpt_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
+
+    detail = json.dumps(
+        {
+            "claude_request_kwargs": claude_client.request_kwargs,
+            "claude_reply": claude_reply,
+            "gpt_request_kwargs": gpt_client.request_kwargs,
+            "gpt_reply": gpt_reply,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        isinstance(claude_client.request_kwargs, dict)
+        and "temperature" not in claude_client.request_kwargs
+        and "top_p" not in claude_client.request_kwargs
+        and isinstance(gpt_client.request_kwargs, dict)
+        and gpt_client.request_kwargs.get("temperature") == 0.2
+        and gpt_client.request_kwargs.get("top_p") == 0.7
+    )
+    return ok, detail
+
+
+def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool, str]:
+    from agent_base.tools.tool_web import WebFetch
+
+    class FakeMessage:
+        content = "summary"
+
+    class FakeClient:
+        def __init__(self):
+            self.request_kwargs = None
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def with_options(self, **kwargs):
+            return self
+
+        def create(self, **kwargs):
+            self.request_kwargs = kwargs
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=FakeMessage())])
+
+    claude_fetch = WebFetch()
+    claude_fetch._summary_client = FakeClient()
+    claude_fetch._summary_api_base = "http://fake"
+    claude_fetch._summary_model_name = "anthropic/claude-3-5-sonnet"
+    claude_fetch._summary_temperature = 0.3
+    claude_result = claude_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
+
+    gpt_fetch = WebFetch()
+    gpt_fetch._summary_client = FakeClient()
+    gpt_fetch._summary_api_base = "http://fake"
+    gpt_fetch._summary_model_name = "gpt-5.4"
+    gpt_fetch._summary_temperature = 0.3
+    gpt_result = gpt_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
+
+    detail = json.dumps(
+        {
+            "claude_request_kwargs": claude_fetch._summary_client.request_kwargs,
+            "claude_result": claude_result,
+            "gpt_request_kwargs": gpt_fetch._summary_client.request_kwargs,
+            "gpt_result": gpt_result,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        isinstance(claude_fetch._summary_client.request_kwargs, dict)
+        and "temperature" not in claude_fetch._summary_client.request_kwargs
+        and isinstance(gpt_fetch._summary_client.request_kwargs, dict)
+        and gpt_fetch._summary_client.request_kwargs.get("temperature") == 0.3
+    )
+    return ok, detail
+
+
 def main() -> int:
     bootstrap()
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -883,6 +1023,8 @@ def main() -> int:
         ("Double-encoded tool args unwrapped", check_double_encoded_tool_arguments_are_unwrapped),
         ("Truncated tool call replay", check_truncated_tool_call_turn_is_replayed_without_execution),
         ("Terminal error accepts artifact", check_terminal_error_can_be_accepted_after_completion_artifact),
+        ("Claude runtime sampling params", check_claude_models_skip_sampling_params_in_agent_runtime),
+        ("Claude WebFetch sampling params", check_claude_models_skip_sampling_params_in_webfetch_summary),
         ("Plaintext result max rounds", check_plaintext_result_rejection_hits_max_rounds),
         ("Bash output bounding", check_bash_output_bounding_and_repeat_collapse),
     ]

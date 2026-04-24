@@ -9,6 +9,7 @@ from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 import tiktoken
 from agent_base.base import BaseAgent
 from agent_base.console_utils import ConsoleEventPrinter
+from agent_base.provider_compat import apply_sampling_params
 from agent_base.prompt import composed_system_prompt
 from agent_base.trace_utils import FlatTraceWriter
 from agent_base.tools.tooling import normalize_workspace_root
@@ -428,9 +429,13 @@ class MultiTurnReactAgent(BaseAgent):
                 request_kwargs = dict(
                     model=self.model,
                     messages=msgs,
-                    temperature=self.llm_generate_cfg.get('temperature', 0.6),
-                    top_p=self.llm_generate_cfg.get('top_p', 0.95),
                     max_tokens=int(self.llm_generate_cfg.get("max_output_tokens", llm_max_output_tokens())),
+                )
+                apply_sampling_params(
+                    request_kwargs,
+                    model_name=self.model,
+                    temperature=self.llm_generate_cfg.get("temperature", 0.6),
+                    top_p=self.llm_generate_cfg.get("top_p", 0.95),
                 )
                 if self._native_tools:
                     request_kwargs["tools"] = self._native_tools

@@ -10,6 +10,7 @@ import requests
 import tiktoken
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
 
+from agent_base.provider_compat import apply_sampling_params
 from agent_base.prompt import EXTRACTOR_PROMPT
 from agent_base.tools.tooling import ToolBase
 from agent_base.utils import PROJECT_ROOT, env_flag, load_dotenv
@@ -413,11 +414,16 @@ class WebFetch(ToolBase):
                     if remaining is not None
                     else client
                 )
-                chat_response = request_client.chat.completions.create(
-                    model=self._summary_model_name,
-                    messages=msgs,
+                request_kwargs = {
+                    "model": self._summary_model_name,
+                    "messages": msgs,
+                }
+                apply_sampling_params(
+                    request_kwargs,
+                    model_name=self._summary_model_name,
                     temperature=self._summary_temperature,
                 )
+                chat_response = request_client.chat.completions.create(**request_kwargs)
                 content = chat_response.choices[0].message.content
                 if content:
                     return content
