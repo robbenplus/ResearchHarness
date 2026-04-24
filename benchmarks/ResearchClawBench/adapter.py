@@ -55,3 +55,24 @@ class ResearchClawBenchAgent(MultiTurnReactAgent):
             workspace_root=workspace_root,
             messages=messages,
         )
+
+    def should_accept_terminal_error(
+        self,
+        *,
+        error_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> bool:
+        return self._required_report_path(workspace_root).exists()
+
+    def accepted_terminal_error_result_text(
+        self,
+        *,
+        error_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> str:
+        return (
+            "ResearchClawBench completion recovered after a terminal LLM/runtime error because "
+            "report/report.md already exists and the required final artifact has been produced."
+        )

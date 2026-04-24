@@ -92,6 +92,40 @@ class BaseAgent(ABC):
 
         return ""
 
+    def should_accept_terminal_error(
+        self,
+        *,
+        error_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> bool:
+        """
+        Decide whether a terminal LLM/runtime error can still be accepted.
+
+        The default behavior is conservative: terminal errors are not accepted.
+        Upper layers may override this hook when benchmark-specific completion
+        artifacts are already present and the remaining assistant text is not
+        semantically important.
+        """
+
+        return False
+
+    def accepted_terminal_error_result_text(
+        self,
+        *,
+        error_text: str,
+        workspace_root: Optional[str],
+        messages: Sequence[dict[str, Any]],
+    ) -> str:
+        """
+        Provide a synthetic terminal result when a terminal error is accepted.
+
+        Returning an empty string falls back to a generic runtime completion
+        message.
+        """
+
+        return ""
+
     @abstractmethod
     def run(self, prompt: str, workspace_root: Optional[str] = None):
         raise NotImplementedError

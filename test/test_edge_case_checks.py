@@ -293,12 +293,472 @@ def check_parallel_readimage_tool_message_order() -> tuple[bool, str]:
     return ok, detail
 
 
-def check_plaintext_result_requires_completion_artifact() -> tuple[bool, str]:
-    from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
+def check_deepseek_readimage_falls_back_to_text_only_context() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
 
-    case_dir = TMP_DIR / "plaintext_result_requires_artifact"
+    case_dir = TMP_DIR / "deepseek_readimage_text_fallback"
     shutil.rmtree(case_dir, ignore_errors=True)
     case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["ReadImage"],
+                llm={
+                    "model": "deepseek-v4-pro",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.second_round_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_img_1",
+                            "type": "function",
+                            "function": {
+                                "name": "ReadImage",
+                                "arguments": json.dumps({"path": "img1.jpg"}),
+                            },
+                        }
+                    ],
+                }
+            self.second_round_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            path = tool_args["path"] if isinstance(tool_args, dict) else "unknown"
+            return {
+                "kind": "image_tool_result",
+                "text": f"path: {path}\nllm_image_attached: true",
+                "path": str(case_dir / path),
+                "image_url": "data:image/jpeg;base64,ZmFrZQ==",
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("inspect one image with deepseek", workspace_root=str(case_dir))
+    fallback_user_message = next(
+        (
+            msg
+            for msg in agent.second_round_messages
+            if msg.get("role") == "user"
+            and isinstance(msg.get("content"), str)
+            and "does not accept runtime image content parts" in msg.get("content", "")
+        ),
+        None,
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "fallback_user_message": fallback_user_message,
+            "messages_seen": agent.second_round_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and fallback_user_message is not None
+    )
+    return ok, detail
+
+
+def check_reasoning_content_is_preserved_across_tool_rounds() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "reasoning_content_roundtrip"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.second_round_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_write_plan",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "outputs/marker.txt",
+                                        "content": "tool completed\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                    "reasoning_content": "deepseek-thinking-token-stream",
+                    "raw_message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_write_plan",
+                                "type": "function",
+                                "function": {
+                                    "name": "Write",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "outputs/marker.txt",
+                                            "content": "tool completed\n",
+                                        }
+                                    ),
+                                },
+                                "index": 0,
+                            }
+                        ],
+                        "reasoning_content": "deepseek-thinking-token-stream",
+                    },
+                }
+            self.second_round_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Preserve reasoning content after tool use", workspace_root=str(case_dir))
+    assistant_messages = [msg for msg in agent.second_round_messages if msg.get("role") == "assistant"]
+    preserved_message = next(
+        (
+            msg
+            for msg in assistant_messages
+            if msg.get("reasoning_content") == "deepseek-thinking-token-stream"
+            and msg.get("tool_calls")
+            and msg["tool_calls"][0].get("index") == 0
+        ),
+        None,
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "assistant_messages": assistant_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and preserved_message is not None
+    )
+    return ok, detail
+
+
+def check_double_encoded_tool_arguments_are_unwrapped() -> tuple[bool, str]:
+    from agent_base.react_agent import parse_tool_arguments_list
+
+    raw_arguments = json.dumps(
+        json.dumps(
+            {
+                "path": "outputs/test.txt",
+                "content": "hello\n",
+            }
+        )
+    )
+    parsed = parse_tool_arguments_list(
+        [
+            {
+                "id": "call_write",
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "arguments": raw_arguments,
+                },
+            }
+        ]
+    )
+    detail = json.dumps({"raw_arguments": raw_arguments, "parsed": parsed}, ensure_ascii=False, indent=2)
+    ok = parsed == [{"path": "outputs/test.txt", "content": "hello\n"}]
+    return ok, detail
+
+
+def check_truncated_tool_call_turn_is_replayed_without_execution() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "truncated_tool_call_replay"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.executed_args: list[object] = []
+            self.second_round_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "length",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_write_big",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "report/report.md",
+                                        "content": "# Oversized draft\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self._turn == 2:
+                self.second_round_messages = msgs
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_write_small",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "report/report.md",
+                                        "content": "# Final report\n\nDone.\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            self.executed_args.append(tool_args)
+            return super().custom_call_tool(tool_name, tool_args, **kwargs)
+
+    agent = FakeAgent()
+    session = agent._run_session("Write the report in smaller steps", workspace_root=str(case_dir))
+    report_path = case_dir / "report" / "report.md"
+    corrective_user_message = next(
+        (
+            msg
+            for msg in agent.second_round_messages
+            if msg.get("role") == "user"
+            and "hit the output limit while emitting native tool calls" in str(msg.get("content", ""))
+        ),
+        None,
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "executed_args": agent.executed_args,
+            "corrective_user_message": corrective_user_message,
+            "report_exists": report_path.exists(),
+            "report_text": report_path.read_text(encoding="utf-8") if report_path.exists() else "",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and corrective_user_message is not None
+        and agent.executed_args == [{"path": "report/report.md", "content": "# Final report\n\nDone.\n"}]
+        and report_path.exists()
+    )
+    return ok, detail
+
+
+def check_reasoning_replay_error_triggers_compacted_retry() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "reasoning_replay_error_retry"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._call_count = 0
+            self.retry_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._call_count += 1
+            if self._call_count == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_write_plan",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "outputs/marker.txt",
+                                        "content": "tool completed\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                    "reasoning_content": "initial reasoning",
+                    "raw_message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_write_plan",
+                                "type": "function",
+                                "function": {
+                                    "name": "Write",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "outputs/marker.txt",
+                                            "content": "tool completed\n",
+                                        }
+                                    ),
+                                },
+                                "index": 0,
+                            }
+                        ],
+                        "reasoning_content": "initial reasoning",
+                    },
+                }
+            if self._call_count == 2:
+                return {
+                    "status": "error",
+                    "error": "llm api error: The `reasoning_content` in the thinking mode must be passed back to the API.",
+                }
+            self.retry_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Recover after reasoning replay error", workspace_root=str(case_dir))
+    recovery_note = next(
+        (
+            msg
+            for msg in agent.retry_messages
+            if msg.get("role") == "user"
+            and "thinking-mode reasoning replay protocol error" in str(msg.get("content", ""))
+        ),
+        None,
+    )
+    assistant_messages = [msg for msg in agent.retry_messages if msg.get("role") == "assistant"]
+    tool_messages = [msg for msg in agent.retry_messages if msg.get("role") == "tool"]
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "call_count": agent._call_count,
+            "retry_messages": agent.retry_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and agent._call_count == 3
+        and recovery_note is not None
+        and assistant_messages == [{"role": "assistant", "content": "done"}]
+        and not tool_messages
+    )
+    return ok, detail
+
+
+def check_terminal_error_can_be_accepted_after_completion_artifact() -> tuple[bool, str]:
+    from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
+
+    case_dir = TMP_DIR / "terminal_error_accepts_artifact"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    (case_dir / "report").mkdir(parents=True, exist_ok=True)
+    (case_dir / "report" / "report.md").write_text("# Report\n\nFinished.\n", encoding="utf-8")
 
     class FakeAgent(ResearchClawBenchAgent):
         def __init__(self):
@@ -314,70 +774,20 @@ def check_plaintext_result_requires_completion_artifact() -> tuple[bool, str]:
                         "presence_penalty": 0.0,
                     },
                 },
-                max_rounds=5,
             )
-            self._turn = 0
 
         def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
-            self._turn += 1
-            if self._turn == 1:
-                return {
-                    "status": "ok",
-                    "finish_reason": "stop",
-                    "content": "Now I will start the experiment.",
-                    "tool_calls": [],
-                }
-            if self._turn == 2:
-                return {
-                    "status": "ok",
-                    "finish_reason": "tool_calls",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call_write_report",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": "report/report.md",
-                                        "content": "# Report\n\nFinished.\n",
-                                    }
-                                ),
-                            },
-                        }
-                    ],
-                }
             return {
-                "status": "ok",
-                "finish_reason": "stop",
-                "content": "Finished. The report is saved at report/report.md.",
-                "tool_calls": [],
+                "status": "error",
+                "error": "llm api error: synthetic failure after report creation",
             }
 
     agent = FakeAgent()
-    session = agent._run_session("Complete the benchmark task", workspace_root=str(case_dir))
-    report_path = case_dir / "report" / "report.md"
-    assistant_messages = [msg for msg in session.get("messages", []) if msg.get("role") == "assistant"]
-    user_messages = [msg for msg in session.get("messages", []) if msg.get("role") == "user"]
-
-    detail = json.dumps(
-        {
-            "turns": agent._turn,
-            "termination": session.get("termination"),
-            "result_text": session.get("result_text"),
-            "report_exists": report_path.exists(),
-            "assistant_messages": assistant_messages,
-            "user_messages": user_messages,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    session = agent._run_session("Recover after terminal error", workspace_root=str(case_dir))
+    detail = json.dumps(session, ensure_ascii=False, indent=2)
     ok = (
-        agent._turn == 3
-        and session.get("termination") == "result"
-        and report_path.exists()
-        and any("report/report.md" in str(msg.get("content", "")) for msg in user_messages[1:])
+        session.get("termination") == "result"
+        and "report/report.md already exists" in session.get("result_text", "")
     )
     return ok, detail
 
@@ -467,7 +877,12 @@ def main() -> int:
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
-        ("Plaintext result requires artifact", check_plaintext_result_requires_completion_artifact),
+        ("DeepSeek ReadImage fallback", check_deepseek_readimage_falls_back_to_text_only_context),
+        ("Reasoning content preserved", check_reasoning_content_is_preserved_across_tool_rounds),
+        ("Reasoning replay error retry", check_reasoning_replay_error_triggers_compacted_retry),
+        ("Double-encoded tool args unwrapped", check_double_encoded_tool_arguments_are_unwrapped),
+        ("Truncated tool call replay", check_truncated_tool_call_turn_is_replayed_without_execution),
+        ("Terminal error accepts artifact", check_terminal_error_can_be_accepted_after_completion_artifact),
         ("Plaintext result max rounds", check_plaintext_result_rejection_hits_max_rounds),
         ("Bash output bounding", check_bash_output_bounding_and_repeat_collapse),
     ]

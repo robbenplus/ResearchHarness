@@ -166,6 +166,19 @@ environment allows.
 
 ## Finalization
 
+- Start `report/report.md` as soon as at least two core result families already
+  have concrete supporting artifacts in `outputs/` or `report/images/`.
+- Prefer an evidence-backed report draft over one more optional script, one
+  more polish pass, or one more non-essential figure.
+- Once the primary quantitative outputs, the main comparison figures, and the
+  core validation artifacts exist, write `report/report.md` immediately.
+- Do not postpone the report in order to chase optional supplementary figures,
+  extra exploratory analyses, or additional polish that is not required to
+  support the task's main claims.
+- Treat optional supplementary work as lower priority than a complete,
+  evidence-backed report. If the report can already answer the task directly,
+  finish the report first and only then consider extras if there is clear
+  remaining need.
 - The final report should be tightly traceable.
 - Important numbers should be reproducible from saved artifacts in the
   workspace.

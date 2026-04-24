@@ -100,6 +100,23 @@ def assistant_text_content(content: Any) -> str:
     return str(content)
 
 
+def assistant_reasoning_content(message: Any) -> Optional[Any]:
+    if hasattr(message, "model_dump"):
+        try:
+            dumped = safe_jsonable(message.model_dump())
+            if isinstance(dumped, dict) and "reasoning_content" in dumped:
+                return dumped.get("reasoning_content")
+        except Exception:
+            pass
+    model_extra = getattr(message, "model_extra", None)
+    if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
+        return safe_jsonable(model_extra.get("reasoning_content"))
+    raw_reasoning = getattr(message, "reasoning_content", None)
+    if raw_reasoning is None:
+        return None
+    return safe_jsonable(raw_reasoning)
+
+
 def assistant_has_meaningful_text(content: Any) -> bool:
     return bool(assistant_text_content(content).strip())
 
@@ -162,11 +179,18 @@ def tool_result_message_content(result: Any) -> str:
     return str(result)
 
 
-def image_context_message(result: Any) -> Optional[dict[str, Any]]:
+def model_supports_runtime_image_parts(model_name: str) -> bool:
+    normalized = str(model_name or "").strip().casefold()
+    if "deepseek" in normalized:
+        return False
+    return True
+
+
+def image_context_message(result: Any, model_name: str) -> Optional[dict[str, Any]]:
     if not isinstance(result, dict) or result.get("kind") != "image_tool_result":
         return None
     image_url = str(result.get("image_url", "")).strip()
-    if not image_url:
+    if not image_url and model_supports_runtime_image_parts(model_name):
         return None
     metadata_text = str(result.get("text", "")).strip()
     text = (
@@ -176,6 +200,13 @@ def image_context_message(result: Any) -> Optional[dict[str, Any]]:
     )
     if metadata_text:
         text += "\n\nReadImage metadata:\n" + metadata_text
+    if not model_supports_runtime_image_parts(model_name):
+        text += (
+            "\n\nThis model endpoint does not accept runtime image content parts, so only the "
+            "ReadImage metadata is forwarded in conversation history. Do not invent visual details "
+            "that are not supported by the metadata."
+        )
+        return {"role": "user", "content": text}
     return {
         "role": "user",
         "content": [
@@ -193,15 +224,58 @@ def api_tool_message(tool_call_id: str, result: Any) -> dict[str, Any]:
     }
 
 
+def assistant_history_message(
+    *,
+    content: Any,
+    tool_calls: Optional[list[dict[str, Any]]] = None,
+    reasoning_content: Optional[Any] = None,
+    raw_message: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if isinstance(raw_message, dict):
+        message = safe_jsonable(raw_message)
+        if isinstance(message, dict):
+            message["role"] = "assistant"
+            if content is not None or "content" not in message:
+                message["content"] = content
+            if tool_calls and "tool_calls" not in message:
+                message["tool_calls"] = tool_calls
+            elif "tool_calls" in message and not message.get("tool_calls"):
+                message.pop("tool_calls", None)
+            if reasoning_content is not None and "reasoning_content" not in message:
+                message["reasoning_content"] = reasoning_content
+            elif "reasoning_content" in message and message.get("reasoning_content") is None:
+                message.pop("reasoning_content", None)
+            return message
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if reasoning_content is not None:
+        message["reasoning_content"] = reasoning_content
+    return message
+
+
 def parse_tool_arguments_list(tool_calls: list[dict[str, Any]]) -> list[Any]:
+    def _maybe_parse_nested_json(raw: Any) -> Any:
+        if not isinstance(raw, str):
+            return raw
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+        if isinstance(parsed, str):
+            nested_text = parsed.strip()
+            if nested_text.startswith("{") or nested_text.startswith("["):
+                try:
+                    return json.loads(nested_text)
+                except (TypeError, ValueError):
+                    return parsed
+        return parsed
+
     parsed_arguments: list[Any] = []
     for tool_call in tool_calls:
         function_block = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
         tool_arguments_raw = function_block.get("arguments", {})
-        try:
-            parsed = json.loads(tool_arguments_raw) if isinstance(tool_arguments_raw, str) else tool_arguments_raw
-        except (TypeError, ValueError):
-            parsed = tool_arguments_raw
+        parsed = _maybe_parse_nested_json(tool_arguments_raw)
         parsed_arguments.append(safe_jsonable(parsed))
     return parsed_arguments
 
@@ -225,6 +299,24 @@ def image_context_trace_text(result: Any) -> str:
     if metadata_text:
         text += "\n\nReadImage metadata:\n" + metadata_text
     return text
+
+
+def is_reasoning_replay_error(error_text: str) -> bool:
+    normalized = str(error_text or "").casefold()
+    return "reasoning_content" in normalized and "must be passed back" in normalized
+
+
+def compact_messages_for_reasoning_retry(
+    messages: Sequence[dict[str, Any]],
+    *,
+    assistant_turn_budget: int = 3,
+) -> list[dict[str, Any]]:
+    safe_messages = [safe_jsonable(message) for message in messages]
+    if len(safe_messages) <= 2:
+        return list(safe_messages)
+    # Reset to the original task framing only. This avoids replaying any prior
+    # assistant turns that may require provider-specific hidden reasoning state.
+    return list(safe_messages[:2])
 
 
 def default_llm_config() -> dict:
@@ -350,6 +442,8 @@ class MultiTurnReactAgent(BaseAgent):
                 message = choice.message
                 content = message.content
                 tool_calls = [normalized_tool_call(tool_call) for tool_call in (message.tool_calls or [])]
+                reasoning_content = assistant_reasoning_content(message)
+                raw_message = safe_jsonable(message.model_dump()) if hasattr(message, "model_dump") else None
 
                 if assistant_has_meaningful_text(content) or tool_calls:
                     if debug_enabled():
@@ -359,6 +453,8 @@ class MultiTurnReactAgent(BaseAgent):
                         "finish_reason": choice.finish_reason,
                         "content": content,
                         "tool_calls": tool_calls,
+                        "reasoning_content": reasoning_content,
+                        "raw_message": raw_message,
                     }
                 else:
                     last_error = "empty response from llm api"
@@ -413,6 +509,13 @@ class MultiTurnReactAgent(BaseAgent):
             tool_calls = message.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
                 token_count += len(self._encoding.encode(json.dumps(tool_calls, ensure_ascii=False)))
+            reasoning_content = message.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                token_count += len(self._encoding.encode(reasoning_content))
+            elif reasoning_content is not None:
+                token_count += len(
+                    self._encoding.encode(json.dumps(safe_jsonable(reasoning_content), ensure_ascii=False))
+                )
         return token_count
 
     def run(self, prompt: str, workspace_root: Optional[str] = None) -> str:
@@ -480,9 +583,32 @@ class MultiTurnReactAgent(BaseAgent):
                 return finalize(result_text, termination, error=termination)
             round_index += 1
             num_llm_calls_available -= 1
-            llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
+            reasoning_error_recovery_attempted = False
+            while True:
+                llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
+                error_text = llm_reply.get("error", "") if isinstance(llm_reply, dict) else ""
+                if (
+                    isinstance(llm_reply, dict)
+                    and llm_reply.get("status") == "error"
+                    and not reasoning_error_recovery_attempted
+                    and is_reasoning_replay_error(error_text)
+                ):
+                    reasoning_error_recovery_attempted = True
+                    compacted_messages = compact_messages_for_reasoning_retry(messages)
+                    recovery_text = (
+                        "Runtime note: the provider returned a thinking-mode reasoning replay protocol error. "
+                        "The conversation history was reset to the original task prompt. Continue from the current "
+                        "workspace state, inspect existing files in code/, outputs/, and report/images/, and "
+                        "re-read any needed files before proceeding."
+                    )
+                    messages = compacted_messages + [{"role": "user", "content": recovery_text}]
+                    trace_writer.append(role="user", text=recovery_text, turn_index=round_index)
+                    continue
+                break
             assistant_content = llm_reply.get("content") if isinstance(llm_reply, dict) else None
             assistant_tool_calls = llm_reply.get("tool_calls", []) if isinstance(llm_reply, dict) else []
+            assistant_reasoning = llm_reply.get("reasoning_content") if isinstance(llm_reply, dict) else None
+            assistant_raw_message = llm_reply.get("raw_message") if isinstance(llm_reply, dict) else None
             assistant_text = assistant_text_content(assistant_content)
             finish_reason = llm_reply.get("finish_reason") if isinstance(llm_reply, dict) else None
             assistant_tool_arguments = parse_tool_arguments_list(assistant_tool_calls)
@@ -500,6 +626,35 @@ class MultiTurnReactAgent(BaseAgent):
                     print(f"Round {round_index}: {assistant_text}")
             if not isinstance(llm_reply, dict) or llm_reply.get("status") == "error":
                 result_text = llm_reply.get("error", "llm api error: unknown error") if isinstance(llm_reply, dict) else str(llm_reply)
+                if self.should_accept_terminal_error(
+                    error_text=result_text,
+                    workspace_root=resolved_workspace_root,
+                    messages=messages,
+                ):
+                    recovered_result_text = self.accepted_terminal_error_result_text(
+                        error_text=result_text,
+                        workspace_root=resolved_workspace_root,
+                        messages=messages,
+                    ).strip()
+                    if not recovered_result_text:
+                        recovered_result_text = (
+                            "Recovered completion after a terminal LLM/runtime error because the required "
+                            "completion artifacts already exist in the workspace."
+                        )
+                    termination = "result"
+                    trace_writer.append(
+                        role="runtime",
+                        text=recovered_result_text,
+                        turn_index=round_index,
+                        termination=termination,
+                        error=result_text,
+                    )
+                    return {
+                        "prompt": prompt_text,
+                        "messages": messages,
+                        "result_text": recovered_result_text,
+                        "termination": termination,
+                    }
                 termination = "llm api error"
                 return finalize(result_text, termination, error=result_text)
 
@@ -526,6 +681,28 @@ class MultiTurnReactAgent(BaseAgent):
                         "content": correction_text,
                     }
                 )
+                trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                continue
+
+            if finish_reason == "length" and assistant_tool_calls:
+                protocol_error = "assistant tool call turn was truncated by output limit"
+                trace_writer.append(
+                    role="assistant",
+                    text=assistant_text.strip(),
+                    turn_index=round_index,
+                    tool_call_ids=assistant_tool_call_ids,
+                    tool_names=assistant_tool_names,
+                    tool_arguments=assistant_tool_arguments,
+                    finish_reason=finish_reason,
+                    error=protocol_error,
+                )
+                correction_text = (
+                    "Error: The previous assistant turn hit the output limit while emitting native tool calls, "
+                    "so none of those tool calls were executed. Re-emit the needed tool calls in a smaller form. "
+                    "If a file is large, split it into multiple smaller Write calls or create it via shorter steps. "
+                    "Do not resend the same oversized truncated tool call."
+                )
+                messages.append({"role": "user", "content": correction_text})
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
                 continue
 
@@ -566,11 +743,12 @@ class MultiTurnReactAgent(BaseAgent):
                     tool_arguments=assistant_tool_arguments,
                     finish_reason=finish_reason,
                 )
-                assistant_message = {
-                    "role": "assistant",
-                    "content": assistant_content,
-                    "tool_calls": assistant_tool_calls,
-                }
+                assistant_message = assistant_history_message(
+                    content=assistant_content,
+                    tool_calls=assistant_tool_calls,
+                    reasoning_content=assistant_reasoning,
+                    raw_message=assistant_raw_message,
+                )
                 messages.append(assistant_message)
                 deferred_image_contexts: list[tuple[str, str, Any, Any, dict[str, Any]]] = []
                 for tool_call, tool_arguments in zip(assistant_tool_calls, assistant_tool_arguments):
@@ -597,7 +775,7 @@ class MultiTurnReactAgent(BaseAgent):
                         tool_names=[tool_name],
                         tool_arguments=[tool_arguments],
                     )
-                    extra_image_context = image_context_message(result)
+                    extra_image_context = image_context_message(result, self.model)
                     if extra_image_context is not None:
                         deferred_image_contexts.append((tool_call_id, tool_name, tool_arguments, result, extra_image_context))
                 for tool_call_id, tool_name, tool_arguments, result, extra_image_context in deferred_image_contexts:
@@ -617,7 +795,13 @@ class MultiTurnReactAgent(BaseAgent):
                         return finalize(result_text, termination, error=termination)
             elif assistant_has_meaningful_text(assistant_content):
                 current_result_text = assistant_text.strip()
-                messages.append({"role": "assistant", "content": current_result_text})
+                messages.append(
+                    assistant_history_message(
+                        content=current_result_text,
+                        reasoning_content=assistant_reasoning,
+                        raw_message=assistant_raw_message,
+                    )
+                )
                 should_accept_result = self.should_accept_plaintext_result(
                     result_text=current_result_text,
                     workspace_root=resolved_workspace_root,
