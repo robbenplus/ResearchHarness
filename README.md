@@ -71,13 +71,13 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 
 ## 📰 News
 
-- **Automatic context compaction for long runs**
+- **2026-04-25: Automatic context compaction for long runs**
   ResearchHarness now supports built-in context compaction for long multi-step tasks instead of relying only on a growing raw message list.
-- **Configurable compaction trigger**
+- **2026-04-25: Configurable compaction trigger**
   You can override the automatic trigger budget with `AUTO_COMPACT_TRIGGER_TOKENS=16k` or `llm.generate_cfg["compact_trigger_tokens"] = "32k"`.
-- **Training-ready trace capture**
+- **2026-04-25: Training-ready trace capture**
   The existing `trace_*.jsonl` format now records full `llm_call` and `compaction` payloads in the same file, so reasoning context, tool environment, and memory-compression steps can all be reused for training or distillation.
-- **Preserved compact memory**
+- **2026-04-25: Preserved compact memory**
   Compaction outputs are still written into session state, and the trace now captures the compaction request/response path as an explicit training event.
 
 ### At a Glance
