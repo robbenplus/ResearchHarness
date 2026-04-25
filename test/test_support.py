@@ -44,6 +44,8 @@ TRACE_REQUIRED_KEYS = {
     "termination",
     "error",
     "image_paths",
+    "capture_type",
+    "payload",
 }
 
 
@@ -129,6 +131,10 @@ def training_trace_ok(rows: list[dict]) -> bool:
         if not isinstance(row.get("tool_arguments"), list):
             return False
         if not isinstance(row.get("tool_call_ids"), list):
+            return False
+        if not isinstance(row.get("capture_type"), str):
+            return False
+        if not isinstance(row.get("payload"), dict):
             return False
     return has_tool_turn and has_tool_result and has_result_turn
 

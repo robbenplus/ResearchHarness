@@ -34,10 +34,14 @@ class ConsoleEventPrinter:
         role = str(row.get("role", ""))
         turn_index = int(row.get("turn_index", 0) or 0)
         text = str(row.get("text", ""))
+        capture_type = str(row.get("capture_type", ""))
         tool_names = row.get("tool_names") if isinstance(row.get("tool_names"), list) else []
         tool_arguments = row.get("tool_arguments") if isinstance(row.get("tool_arguments"), list) else []
         finish_reason = str(row.get("finish_reason", ""))
         error = str(row.get("error", ""))
+
+        if capture_type and not text.strip():
+            return
 
         if role == "system":
             return

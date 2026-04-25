@@ -23,6 +23,8 @@ TRACE_FIELD_NAMES = [
     "termination",
     "error",
     "image_paths",
+    "capture_type",
+    "payload",
 ]
 
 
@@ -55,6 +57,8 @@ class FlatTraceWriter:
         termination: Optional[str] = None,
         error: Optional[str] = None,
         image_paths: Optional[list[str]] = None,
+        capture_type: str = "",
+        payload: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         self.event_index += 1
         row = {
@@ -73,6 +77,8 @@ class FlatTraceWriter:
             "termination": termination or "",
             "error": error or "",
             "image_paths": image_paths or [],
+            "capture_type": capture_type or "",
+            "payload": safe_jsonable(payload or {}),
         }
         if self.path is not None:
             append_jsonl(self.path, row)

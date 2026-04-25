@@ -29,6 +29,7 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 ## 📚 Table of Contents
 
 - [✨ Highlights](#-highlights)
+- [📰 News](#-news)
 - [🧭 Positioning](#-positioning)
 - [⚡ Quick Start](#-quick-start)
 - [🧠 How It Works](#-how-it-works)
@@ -65,6 +66,19 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
   The repo validates actual multi-step agent behavior, not just isolated tool calls.
 - **PDF-to-figure workflow**
   `ReadPDF` can expose extracted image paths, and `ReadImage` can inspect the actual extracted figure file.
+
+---
+
+## 📰 News
+
+- **Automatic context compaction for long runs**
+  ResearchHarness now supports built-in context compaction for long multi-step tasks instead of relying only on a growing raw message list.
+- **Configurable compaction trigger**
+  You can override the automatic trigger budget with `AUTO_COMPACT_TRIGGER_TOKENS=16k` or `llm.generate_cfg["compact_trigger_tokens"] = "32k"`.
+- **Training-ready trace capture**
+  The existing `trace_*.jsonl` format now records full `llm_call` and `compaction` payloads in the same file, so reasoning context, tool environment, and memory-compression steps can all be reused for training or distillation.
+- **Preserved compact memory**
+  Compaction outputs are still written into session state, and the trace now captures the compaction request/response path as an explicit training event.
 
 ### At a Glance
 
@@ -378,6 +392,8 @@ Every row uses the same keys:
 - `termination`
 - `error`
 - `image_paths`
+- `capture_type`
+- `payload`
 
 ### Why flat traces?
 
@@ -395,7 +411,42 @@ The trace includes:
 - runtime-injected messages
 - final assistant text
 
+It also now supports training-oriented captures in the same file:
+
+- `capture_type = "llm_call"`
+  stores the exact request messages sent to the model and the structured model response
+- `capture_type = "compaction"`
+  stores the pre-compaction messages, summary request, summary response, resulting compact memory, and post-compaction message state
+
+This keeps the trace filename and flat JSONL contract unchanged while making the same file usable for:
+
+- debugging
+- replay
+- benchmark inspection
+- step-level training and distillation
+
 In practice, this means the harness can be used not only to run agents, but also to archive real tool-using trajectories for later analysis or optional training reuse.
+
+### Auto Compaction
+
+Long runs can trigger automatic context compaction before the input budget is exhausted.
+
+By default, the trigger budget is computed from the model input/output budget. You can override it when you want earlier compaction:
+
+```bash
+AUTO_COMPACT_TRIGGER_TOKENS=16k python3 run_agent.py "your prompt"
+```
+
+or programmatically:
+
+```python
+llm = {
+    "model": "gpt-5.4",
+    "generate_cfg": {
+        "compact_trigger_tokens": "32k",
+    },
+}
+```
 
 ---
 

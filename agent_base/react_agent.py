@@ -9,8 +9,11 @@ from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 import tiktoken
 from agent_base.base import BaseAgent
 from agent_base.console_utils import ConsoleEventPrinter
+from agent_base.context_compact import compact_messages, should_compact_messages
+from agent_base.model_profiles import resolve_model_profile
 from agent_base.provider_compat import apply_sampling_params
 from agent_base.prompt import composed_system_prompt
+from agent_base.session_state import AgentSessionState, CompactionRecord, persist_session_state, resolve_session_state_path
 from agent_base.trace_utils import FlatTraceWriter
 from agent_base.tools.tooling import normalize_workspace_root
 from agent_base.tools.tool_file import Edit, Glob, Grep, Read, ReadImage, ReadPDF, Write
@@ -120,6 +123,54 @@ def assistant_reasoning_content(message: Any) -> Optional[Any]:
 
 def assistant_has_meaningful_text(content: Any) -> bool:
     return bool(assistant_text_content(content).strip())
+
+
+def input_tokens_from_usage(usage: Any) -> Optional[int]:
+    if not isinstance(usage, dict):
+        return None
+    for key in ("prompt_tokens", "input_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def llm_call_trace_payload(
+    *,
+    request_messages: Sequence[dict[str, Any]],
+    response: Any,
+    model_name: str,
+    native_tools: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "model_name": model_name,
+        "request_messages": safe_jsonable(list(request_messages)),
+        "tools_enabled": bool(native_tools),
+        "native_tools": safe_jsonable(list(native_tools)),
+        "response": safe_jsonable(response),
+    }
+
+
+def compaction_trace_payload(
+    *,
+    trigger_reason: str,
+    outcome: Any,
+) -> dict[str, Any]:
+    return {
+        "trigger_reason": trigger_reason,
+        "status": getattr(outcome, "status", ""),
+        "error": getattr(outcome, "error", ""),
+        "prior_token_estimate": getattr(outcome, "prior_token_estimate", 0),
+        "new_token_estimate": getattr(outcome, "new_token_estimate", 0),
+        "compacted_group_count": getattr(outcome, "compacted_group_count", 0),
+        "kept_group_count": getattr(outcome, "kept_group_count", 0),
+        "existing_memory_text": getattr(outcome, "existing_memory_text", ""),
+        "summary_request": safe_jsonable(getattr(outcome, "summary_request", []) or []),
+        "summary_response": safe_jsonable(getattr(outcome, "summary_response", {}) or {}),
+        "summary_text": getattr(outcome, "summary_text", ""),
+        "pre_messages": safe_jsonable(getattr(outcome, "pre_messages", []) or []),
+        "post_messages": safe_jsonable(getattr(outcome, "post_messages", []) or []),
+    }
 
 
 def legacy_protocol_error(content: str) -> Optional[str]:
@@ -377,6 +428,7 @@ class MultiTurnReactAgent(BaseAgent):
         self.llm_generate_cfg = llm["generate_cfg"]
         self.trace_dir = Path(trace_dir) if trace_dir else None
         self.trace_path: Optional[Path] = None
+        self.session_state_path: Optional[Path] = None
         self.role_prompt = self.resolve_role_prompt(role_prompt)
         self.max_llm_calls = int(max_llm_calls) if max_llm_calls is not None else max_llm_calls_per_run()
         self.max_rounds = int(max_rounds) if max_rounds is not None else max_agent_rounds()
@@ -406,7 +458,18 @@ class MultiTurnReactAgent(BaseAgent):
             else None
         )
 
-    def call_llm_api(self, msgs, max_tries=10, runtime_deadline: Optional[float] = None) -> dict[str, Any]:
+    def _call_chat_completion(
+        self,
+        msgs,
+        *,
+        include_native_tools: bool,
+        max_tries=10,
+        runtime_deadline: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> dict[str, Any]:
         max_tries = int(self.llm_generate_cfg.get("max_retries", max_tries))
         if self._llm_client is None or not self._llm_api_base:
             return {"status": "error", "error": "llm api error: API_BASE is not set."}
@@ -429,19 +492,29 @@ class MultiTurnReactAgent(BaseAgent):
                 request_kwargs = dict(
                     model=self.model,
                     messages=msgs,
-                    max_tokens=int(self.llm_generate_cfg.get("max_output_tokens", llm_max_output_tokens())),
+                    max_tokens=int(
+                        max_output_tokens
+                        if max_output_tokens is not None
+                        else self.llm_generate_cfg.get("max_output_tokens", llm_max_output_tokens())
+                    ),
                 )
                 apply_sampling_params(
                     request_kwargs,
                     model_name=self.model,
-                    temperature=self.llm_generate_cfg.get("temperature", 0.6),
-                    top_p=self.llm_generate_cfg.get("top_p", 0.95),
+                    temperature=(
+                        temperature if temperature is not None else self.llm_generate_cfg.get("temperature", 0.6)
+                    ),
+                    top_p=top_p if top_p is not None else self.llm_generate_cfg.get("top_p", 0.95),
                 )
-                if self._native_tools:
+                if include_native_tools and self._native_tools:
                     request_kwargs["tools"] = self._native_tools
                     request_kwargs["tool_choice"] = "auto"
                     request_kwargs["parallel_tool_calls"] = True
-                request_kwargs["presence_penalty"] = self.llm_generate_cfg.get('presence_penalty', 1.1)
+                request_kwargs["presence_penalty"] = (
+                    presence_penalty
+                    if presence_penalty is not None
+                    else self.llm_generate_cfg.get("presence_penalty", 1.1)
+                )
                 chat_response = request_client.chat.completions.create(**request_kwargs)
                 choice = chat_response.choices[0]
                 message = choice.message
@@ -449,6 +522,7 @@ class MultiTurnReactAgent(BaseAgent):
                 tool_calls = [normalized_tool_call(tool_call) for tool_call in (message.tool_calls or [])]
                 reasoning_content = assistant_reasoning_content(message)
                 raw_message = safe_jsonable(message.model_dump()) if hasattr(message, "model_dump") else None
+                usage = safe_jsonable(chat_response.usage.model_dump()) if getattr(chat_response, "usage", None) else None
 
                 if assistant_has_meaningful_text(content) or tool_calls:
                     if debug_enabled():
@@ -460,6 +534,7 @@ class MultiTurnReactAgent(BaseAgent):
                         "tool_calls": tool_calls,
                         "reasoning_content": reasoning_content,
                         "raw_message": raw_message,
+                        "usage": usage,
                     }
                 else:
                     last_error = "empty response from llm api"
@@ -490,9 +565,35 @@ class MultiTurnReactAgent(BaseAgent):
 
         return {"status": "error", "error": f"llm api error: {last_error}"}
 
-    def count_tokens(self, messages):
+    def call_llm_api(self, msgs, max_tries=10, runtime_deadline: Optional[float] = None) -> dict[str, Any]:
+        return self._call_chat_completion(
+            msgs,
+            include_native_tools=True,
+            max_tries=max_tries,
+            runtime_deadline=runtime_deadline,
+        )
+
+    def call_compaction_api(
+        self,
+        msgs,
+        *,
+        runtime_deadline: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return self._call_chat_completion(
+            msgs,
+            include_native_tools=False,
+            max_tries=3,
+            runtime_deadline=runtime_deadline,
+            max_output_tokens=max_output_tokens,
+            temperature=0.0,
+            top_p=1.0,
+            presence_penalty=0.0,
+        )
+
+    def count_tokens(self, messages, *, include_tool_schema: bool = True):
         image_token_estimate = int(os.getenv("IMAGE_PART_TOKEN_ESTIMATE", str(DEFAULT_IMAGE_TOKEN_ESTIMATE)))
-        token_count = self._native_tools_token_estimate
+        token_count = self._native_tools_token_estimate if include_tool_schema else 0
         for message in messages:
             token_count += len(self._encoding.encode(message.get("role", "")))
             content = message.get("content", "")
@@ -551,6 +652,18 @@ class MultiTurnReactAgent(BaseAgent):
         )
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
         max_llm_calls = self.max_llm_calls
+        max_input_tokens = int(self.llm_generate_cfg.get("max_input_tokens", DEFAULT_MAX_INPUT_TOKENS))
+        max_output_tokens = int(self.llm_generate_cfg.get("max_output_tokens", llm_max_output_tokens()))
+        compact_trigger_tokens = self.llm_generate_cfg.get(
+            "compact_trigger_tokens",
+            os.getenv("AUTO_COMPACT_TRIGGER_TOKENS"),
+        )
+        model_profile = resolve_model_profile(
+            self.model,
+            configured_max_input_tokens=max_input_tokens,
+            configured_max_output_tokens=max_output_tokens,
+            compact_trigger_tokens=compact_trigger_tokens,
+        )
         agent_runtime_limit = self.max_runtime_seconds
         runtime_deadline = start_time + agent_runtime_limit
         num_llm_calls_available = max_llm_calls
@@ -562,6 +675,29 @@ class MultiTurnReactAgent(BaseAgent):
             on_event=event_callback,
         )
         self.trace_path = trace_writer.path
+        self.session_state_path = resolve_session_state_path(resolved_workspace_root)
+        session_state = AgentSessionState(
+            run_id=trace_writer.run_id,
+            model_name=self.model,
+            workspace_root=str(resolved_workspace_root),
+            prompt=prompt_text,
+            trace_path=str(self.trace_path) if self.trace_path else "",
+            llm_calls_remaining=num_llm_calls_available,
+            max_rounds=self.max_rounds,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            model_profile=model_profile,
+        )
+
+        def persist_state(*, termination: str = "", error: str = "") -> None:
+            session_state.trace_path = str(self.trace_path) if self.trace_path else ""
+            session_state.turn_index = round_index
+            session_state.llm_calls_remaining = num_llm_calls_available
+            session_state.current_token_estimate = self.count_tokens(messages)
+            session_state.termination = termination
+            session_state.error = error
+            session_state.capture_messages(messages)
+            persist_session_state(self.session_state_path, session_state)
 
         def finalize(result_text: str, termination: str, *, role: str = "runtime", error: str = "") -> dict[str, Any]:
             trace_writer.append(
@@ -571,26 +707,126 @@ class MultiTurnReactAgent(BaseAgent):
                 termination=termination,
                 error=error,
             )
+            persist_state(termination=termination, error=error)
             return {
                 "prompt": prompt_text,
                 "messages": messages,
                 "result_text": result_text,
                 "termination": termination,
+                "trace_path": str(self.trace_path) if self.trace_path else "",
+                "session_state_path": str(self.session_state_path) if self.session_state_path else "",
             }
 
         trace_writer.append(role="system", text=system_prompt, turn_index=0)
         trace_writer.append(role="user", text=user_content, turn_index=0)
+        persist_state()
 
         while num_llm_calls_available > 0 and round_index < self.max_rounds:
             if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                 result_text = "No result found before the maximum agent runtime limit."
                 termination = f"agent runtime limit reached: {agent_runtime_limit}s"
                 return finalize(result_text, termination, error=termination)
+            current_token_estimate = self.count_tokens(messages)
+            should_compact = False
+            compact_reason = ""
+            if len(messages) > 2:
+                should_compact, compact_reason = should_compact_messages(
+                    last_input_tokens=session_state.last_input_tokens,
+                    current_token_estimate=current_token_estimate,
+                    model_profile=model_profile,
+                )
+            if should_compact:
+                trace_writer.append(
+                    role="runtime",
+                    text=(
+                        "Runtime note: compacting earlier conversation history before the next model call "
+                        f"because the {compact_reason} budget crossed the pre-limit threshold."
+                    ),
+                    turn_index=round_index,
+                )
+                compact_outcome = compact_messages(
+                    messages=messages,
+                    original_prompt_text=prompt_text,
+                    model_name=self.model,
+                    model_profile=model_profile,
+                    llm_caller=self.call_compaction_api,
+                    token_counter=self.count_tokens,
+                    runtime_deadline=runtime_deadline,
+                )
+                if compact_outcome.status == "ok":
+                    messages = compact_outcome.compacted_messages
+                    session_state.last_input_tokens = None
+                    session_state.compactions.append(
+                        CompactionRecord(
+                            turn_index=round_index,
+                            status="ok",
+                            trigger_reason=compact_reason,
+                            prior_token_estimate=compact_outcome.prior_token_estimate,
+                            prior_message_count=len(session_state.messages),
+                            compacted_group_count=compact_outcome.compacted_group_count,
+                            kept_group_count=compact_outcome.kept_group_count,
+                            new_token_estimate=compact_outcome.new_token_estimate,
+                            new_message_count=len(messages),
+                            summary_text=compact_outcome.summary_text,
+                        )
+                    )
+                    trace_writer.append(
+                        role="runtime",
+                        text=(
+                            "Runtime note: context compaction completed. "
+                            f"Token estimate {compact_outcome.prior_token_estimate} -> {compact_outcome.new_token_estimate}. "
+                            f"Compacted {compact_outcome.compacted_group_count} older turn groups."
+                        ),
+                        turn_index=round_index,
+                        capture_type="compaction",
+                        payload=compaction_trace_payload(trigger_reason=compact_reason, outcome=compact_outcome),
+                    )
+                    persist_state()
+                    current_token_estimate = compact_outcome.new_token_estimate
+                else:
+                    session_state.compactions.append(
+                        CompactionRecord(
+                            turn_index=round_index,
+                            status="error",
+                            trigger_reason=compact_reason,
+                            prior_token_estimate=compact_outcome.prior_token_estimate,
+                            prior_message_count=len(messages),
+                            compacted_group_count=compact_outcome.compacted_group_count,
+                            kept_group_count=compact_outcome.kept_group_count,
+                            error=compact_outcome.error,
+                        )
+                    )
+                    trace_writer.append(
+                        role="runtime",
+                        text="Runtime note: context compaction failed; the existing history was kept unchanged.",
+                        turn_index=round_index,
+                        error=compact_outcome.error,
+                        capture_type="compaction",
+                        payload=compaction_trace_payload(trigger_reason=compact_reason, outcome=compact_outcome),
+                    )
+                    persist_state(error=compact_outcome.error)
+            if current_token_estimate > max_input_tokens:
+                result_text = "No result found before the maximum input token limit."
+                termination = f"input token limit reached: {current_token_estimate} > {max_input_tokens}"
+                return finalize(result_text, termination, error=termination)
             round_index += 1
             num_llm_calls_available -= 1
             reasoning_error_recovery_attempted = False
             while True:
+                llm_request_messages = safe_jsonable(messages)
                 llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
+                trace_writer.append(
+                    role="runtime",
+                    text="",
+                    turn_index=round_index,
+                    capture_type="llm_call",
+                    payload=llm_call_trace_payload(
+                        request_messages=llm_request_messages,
+                        response=llm_reply,
+                        model_name=self.model,
+                        native_tools=self._native_tools,
+                    ),
+                )
                 error_text = llm_reply.get("error", "") if isinstance(llm_reply, dict) else ""
                 if (
                     isinstance(llm_reply, dict)
@@ -608,8 +844,13 @@ class MultiTurnReactAgent(BaseAgent):
                     )
                     messages = compacted_messages + [{"role": "user", "content": recovery_text}]
                     trace_writer.append(role="user", text=recovery_text, turn_index=round_index)
+                    session_state.last_input_tokens = None
+                    persist_state(error=error_text)
                     continue
                 break
+            session_state.last_input_tokens = input_tokens_from_usage(
+                llm_reply.get("usage") if isinstance(llm_reply, dict) else None
+            )
             assistant_content = llm_reply.get("content") if isinstance(llm_reply, dict) else None
             assistant_tool_calls = llm_reply.get("tool_calls", []) if isinstance(llm_reply, dict) else []
             assistant_reasoning = llm_reply.get("reasoning_content") if isinstance(llm_reply, dict) else None
@@ -646,20 +887,7 @@ class MultiTurnReactAgent(BaseAgent):
                             "Recovered completion after a terminal LLM/runtime error because the required "
                             "completion artifacts already exist in the workspace."
                         )
-                    termination = "result"
-                    trace_writer.append(
-                        role="runtime",
-                        text=recovered_result_text,
-                        turn_index=round_index,
-                        termination=termination,
-                        error=result_text,
-                    )
-                    return {
-                        "prompt": prompt_text,
-                        "messages": messages,
-                        "result_text": recovered_result_text,
-                        "termination": termination,
-                    }
+                    return finalize(recovered_result_text, "result", role="runtime", error=result_text)
                 termination = "llm api error"
                 return finalize(result_text, termination, error=result_text)
 
@@ -687,6 +915,7 @@ class MultiTurnReactAgent(BaseAgent):
                     }
                 )
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                persist_state(error=deprecated_protocol)
                 continue
 
             if finish_reason == "length" and assistant_tool_calls:
@@ -709,6 +938,7 @@ class MultiTurnReactAgent(BaseAgent):
                 )
                 messages.append({"role": "user", "content": correction_text})
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                persist_state(error=protocol_error)
                 continue
 
             if assistant_tool_calls and assistant_has_meaningful_text(assistant_content):
@@ -736,6 +966,7 @@ class MultiTurnReactAgent(BaseAgent):
                     }
                 )
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                persist_state(error=protocol_error)
                 continue
 
             if assistant_tool_calls:
@@ -798,6 +1029,7 @@ class MultiTurnReactAgent(BaseAgent):
                         result_text = "No result found before the maximum agent runtime limit."
                         termination = f"agent runtime limit reached: {agent_runtime_limit}s"
                         return finalize(result_text, termination, error=termination)
+                persist_state()
             elif assistant_has_meaningful_text(assistant_content):
                 current_result_text = assistant_text.strip()
                 messages.append(
@@ -813,20 +1045,7 @@ class MultiTurnReactAgent(BaseAgent):
                     messages=messages,
                 )
                 if should_accept_result:
-                    current_termination = "result"
-                    trace_writer.append(
-                        role="assistant",
-                        text=current_result_text,
-                        turn_index=round_index,
-                        finish_reason=finish_reason,
-                        termination=current_termination,
-                    )
-                    return {
-                        "prompt": prompt_text,
-                        "messages": messages,
-                        "result_text": current_result_text,
-                        "termination": current_termination,
-                    }
+                    return finalize(current_result_text, "result", role="assistant")
                 protocol_error = "plain result rejected by additional stop condition"
                 trace_writer.append(
                     role="assistant",
@@ -847,6 +1066,7 @@ class MultiTurnReactAgent(BaseAgent):
                     )
                 messages.append({"role": "user", "content": correction_text})
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                persist_state(error=protocol_error)
                 continue
             else:
                 protocol_error = "assistant emitted empty response"
@@ -868,19 +1088,13 @@ class MultiTurnReactAgent(BaseAgent):
                     }
                 )
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
+                persist_state(error=protocol_error)
                 continue
 
-            max_tokens = int(self.llm_generate_cfg.get("max_input_tokens", 110 * 1024))
             token_count = self.count_tokens(messages)
             if debug_enabled():
                 print(f"round: {round_index}, token count: {token_count}")
-
-            if token_count > max_tokens:
-                if debug_enabled():
-                    print(f"Token quantity exceeds the limit: {token_count} > {max_tokens}")
-                result_text = "No result found before the maximum input token limit."
-                termination = f"input token limit reached: {token_count} > {max_tokens}"
-                return finalize(result_text, termination, error=termination)
+            persist_state()
 
         result_text = 'No result found.'
         termination = 'result not found'

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from test_support import TEST_RUNS_DIR, bootstrap, preview
+from test_support import TEST_RUNS_DIR, bootstrap, load_trace_records, preview
 
 
 TMP_DIR = TEST_RUNS_DIR / "edge_case_checks"
@@ -752,6 +752,366 @@ def check_reasoning_replay_error_triggers_compacted_retry() -> tuple[bool, str]:
     return ok, detail
 
 
+def check_compact_trigger_token_parser_supports_k_suffix() -> tuple[bool, str]:
+    from agent_base.model_profiles import parse_compact_trigger_tokens
+
+    parsed_16k = parse_compact_trigger_tokens("16k", context_window=65536)
+    parsed_32k = parse_compact_trigger_tokens("32k", context_window=65536)
+    detail = json.dumps(
+        {
+            "parsed_16k": parsed_16k,
+            "parsed_32k": parsed_32k,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = parsed_16k == 16384 and parsed_32k == 32768
+    return ok, detail
+
+
+def check_context_compaction_persists_summary_and_session_state() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "context_compaction_success"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            trace_dir = case_dir / "traces"
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            super().__init__(
+                function_list=["Read"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 40000,
+                        "max_output_tokens": 512,
+                        "compact_trigger_tokens": "16k",
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+                trace_dir=str(trace_dir),
+            )
+            self._turn = 0
+            self.third_round_messages = []
+            self.compaction_requests = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_read_alpha",
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": json.dumps({"path": "notes/alpha.txt"}),
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 8000},
+                }
+            if self._turn == 2:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_read_beta",
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": json.dumps({"path": "notes/beta.txt"}),
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 20000},
+                }
+            self.third_round_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 700},
+            }
+
+        def call_compaction_api(self, msgs, *, runtime_deadline=None, max_output_tokens=None):
+            self.compaction_requests = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": (
+                    "Goal\n- Finish the task.\n\n"
+                    "Files and artifacts\n- notes/alpha.txt reviewed.\n\n"
+                    "Evidence and results\n- Earlier observations were collected.\n\n"
+                    "Next useful actions\n- Continue from the latest raw turn."
+                ),
+                "tool_calls": [],
+            }
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            path = tool_args["path"] if isinstance(tool_args, dict) else "unknown"
+            return f"{path}\n" + ("evidence line\n" * 320)
+
+    agent = FakeAgent()
+    session = agent._run_session("Read the evidence files and continue.", workspace_root=str(case_dir))
+    session_state_path = Path(session["session_state_path"])
+    trace_rows = load_trace_records(Path(session["trace_path"]))
+    session_state = json.loads(session_state_path.read_text(encoding="utf-8"))
+    compactions = session_state.get("compactions", [])
+    llm_capture_rows = [row for row in trace_rows if row.get("capture_type") == "llm_call"]
+    compaction_capture_rows = [row for row in trace_rows if row.get("capture_type") == "compaction"]
+    compaction_payload = compaction_capture_rows[-1].get("payload", {}) if compaction_capture_rows else {}
+    summary_message = next(
+        (
+            msg
+            for msg in agent.third_round_messages
+            if msg.get("role") == "user"
+            and "Runtime memory summary from earlier turns." in str(msg.get("content", ""))
+        ),
+        None,
+    )
+    roles_after_initial = [msg.get("role") for msg in agent.third_round_messages[2:]]
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "session_state_path": str(session_state_path),
+            "compactions": compactions,
+            "llm_capture_count": len(llm_capture_rows),
+            "compaction_capture_rows": compaction_capture_rows,
+            "roles_after_initial": roles_after_initial,
+            "third_round_messages": agent.third_round_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and session_state_path.exists()
+        and session_state.get("model_profile", {}).get("compact_trigger_tokens_override") == 16384
+        and len(compactions) == 1
+        and compactions[0].get("status") == "ok"
+        and bool(compactions[0].get("summary_text", "").strip())
+        and len(llm_capture_rows) == 3
+        and all(isinstance(row.get("payload", {}).get("request_messages"), list) for row in llm_capture_rows)
+        and all(isinstance(row.get("payload", {}).get("response"), dict) for row in llm_capture_rows)
+        and len(compaction_capture_rows) == 1
+        and compaction_payload.get("status") == "ok"
+        and isinstance(compaction_payload.get("summary_request"), list)
+        and isinstance(compaction_payload.get("summary_response"), dict)
+        and isinstance(compaction_payload.get("pre_messages"), list)
+        and isinstance(compaction_payload.get("post_messages"), list)
+        and summary_message is not None
+        and roles_after_initial[:3] == ["user", "assistant", "tool"]
+    )
+    return ok, detail
+
+
+def check_context_compaction_refreshes_existing_memory_without_recursive_summary() -> tuple[bool, str]:
+    from agent_base.context_compact import COMPACT_MEMORY_PREFIX, compact_messages
+    from agent_base.model_profiles import resolve_model_profile
+
+    captured: dict[str, object] = {}
+
+    def fake_llm(msgs, *, runtime_deadline=None, max_output_tokens=None):
+        captured["messages"] = msgs
+        captured["max_output_tokens"] = max_output_tokens
+        return {
+            "status": "ok",
+            "finish_reason": "stop",
+            "content": (
+                "Goal\n- Continue the task.\n\n"
+                "Files and artifacts\n- outputs/source_posterior_summary.csv exists.\n\n"
+                "Evidence and results\n- Earlier posterior summaries were computed.\n\n"
+                "Next useful actions\n- Implement the main analysis script."
+            ),
+            "tool_calls": [],
+        }
+
+    model_profile = resolve_model_profile(
+        "fake-model",
+        configured_max_input_tokens=40000,
+        configured_max_output_tokens=512,
+        compact_trigger_tokens="16k",
+    )
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Prompt:\nDo the benchmark task."},
+        {
+            "role": "user",
+            "content": (
+                COMPACT_MEMORY_PREFIX
+                + "Goal\n- Older compact summary.\n\nEvidence and results\n- Old result.\n\nNext useful actions\n- Keep going."
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_alpha",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{\"path\":\"notes/alpha.txt\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_alpha", "name": "Read", "content": "alpha evidence"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_beta",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{\"path\":\"notes/beta.txt\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_beta", "name": "Read", "content": "beta evidence"},
+    ]
+
+    outcome = compact_messages(
+        messages=messages,
+        original_prompt_text="Do the benchmark task.",
+        model_name="fake-model",
+        model_profile=model_profile,
+        llm_caller=fake_llm,
+        token_counter=lambda msgs: len(json.dumps(msgs, ensure_ascii=False)),
+    )
+    request_messages = captured.get("messages") or []
+    request_text = ""
+    if isinstance(request_messages, list) and len(request_messages) >= 2:
+        request_text = str(request_messages[1].get("content", ""))
+    compact_memory_messages = [
+        msg
+        for msg in outcome.compacted_messages
+        if msg.get("role") == "user" and str(msg.get("content", "")).startswith(COMPACT_MEMORY_PREFIX)
+    ]
+    detail = json.dumps(
+        {
+            "outcome": {
+                "status": outcome.status,
+                "compacted_group_count": outcome.compacted_group_count,
+                "kept_group_count": outcome.kept_group_count,
+                "summary_text": outcome.summary_text,
+                "new_token_estimate": outcome.new_token_estimate,
+            },
+            "request_text": request_text,
+            "compacted_messages": outcome.compacted_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        outcome.status == "ok"
+        and outcome.compacted_group_count == 1
+        and len(compact_memory_messages) == 1
+        and "Previously compressed memory to preserve and refine:" in request_text
+        and "Older compact summary." in request_text
+        and COMPACT_MEMORY_PREFIX not in request_text
+    )
+    return ok, detail
+
+
+def check_context_compaction_failure_is_recorded_before_hard_stop() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "context_compaction_failure"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Read"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 5000,
+                        "max_output_tokens": 512,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.compaction_requests = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_read_large",
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": json.dumps({"path": "notes/large.txt"}),
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 4500},
+                }
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "unreachable",
+                "tool_calls": [],
+            }
+
+        def call_compaction_api(self, msgs, *, runtime_deadline=None, max_output_tokens=None):
+            self.compaction_requests = msgs
+            return {"status": "error", "error": "llm api error: compaction unavailable"}
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            return "overflow\n" + ("token\n" * 1600)
+
+    agent = FakeAgent()
+    session = agent._run_session("Read the large file.", workspace_root=str(case_dir))
+    session_state_path = Path(session["session_state_path"])
+    session_state = json.loads(session_state_path.read_text(encoding="utf-8"))
+    compactions = session_state.get("compactions", [])
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "session_state_path": str(session_state_path),
+            "compactions": compactions,
+            "compaction_requests": agent.compaction_requests,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        isinstance(session.get("termination"), str)
+        and session["termination"].startswith("input token limit reached")
+        and session_state.get("termination", "").startswith("input token limit reached")
+        and len(compactions) == 1
+        and compactions[0].get("status") == "error"
+        and compactions[0].get("error") == "llm api error: compaction unavailable"
+        and bool(agent.compaction_requests)
+    )
+    return ok, detail
+
+
 def check_terminal_error_can_be_accepted_after_completion_artifact() -> tuple[bool, str]:
     from benchmarks.ResearchClawBench.adapter import ResearchClawBenchAgent
 
@@ -1020,6 +1380,10 @@ def main() -> int:
         ("DeepSeek ReadImage fallback", check_deepseek_readimage_falls_back_to_text_only_context),
         ("Reasoning content preserved", check_reasoning_content_is_preserved_across_tool_rounds),
         ("Reasoning replay error retry", check_reasoning_replay_error_triggers_compacted_retry),
+        ("Compact trigger parser", check_compact_trigger_token_parser_supports_k_suffix),
+        ("Context compaction persists state", check_context_compaction_persists_summary_and_session_state),
+        ("Context compaction refreshes memory", check_context_compaction_refreshes_existing_memory_without_recursive_summary),
+        ("Context compaction failure recorded", check_context_compaction_failure_is_recorded_before_hard_stop),
         ("Double-encoded tool args unwrapped", check_double_encoded_tool_arguments_are_unwrapped),
         ("Truncated tool call replay", check_truncated_tool_call_turn_is_replayed_without_execution),
         ("Terminal error accepts artifact", check_terminal_error_can_be_accepted_after_completion_artifact),
