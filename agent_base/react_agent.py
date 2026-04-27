@@ -306,6 +306,22 @@ def assistant_history_message(
     return message
 
 
+def assistant_retry_history_message(
+    *,
+    content: Any,
+    reasoning_content: Optional[Any] = None,
+) -> Optional[dict[str, Any]]:
+    if reasoning_content is None and not assistant_has_meaningful_text(content):
+        return None
+    # For retry/correction branches, preserve a replay-safe assistant history
+    # message without tool calls so provider-specific reasoning state is not
+    # lost while avoiding invalid unfinished tool-call history.
+    return assistant_history_message(
+        content=assistant_text_content(content),
+        reasoning_content=reasoning_content,
+    )
+
+
 def parse_tool_arguments_list(tool_calls: list[dict[str, Any]]) -> list[Any]:
     def _maybe_parse_nested_json(raw: Any) -> Any:
         if not isinstance(raw, str):
@@ -351,24 +367,6 @@ def image_context_trace_text(result: Any) -> str:
     if metadata_text:
         text += "\n\nReadImage metadata:\n" + metadata_text
     return text
-
-
-def is_reasoning_replay_error(error_text: str) -> bool:
-    normalized = str(error_text or "").casefold()
-    return "reasoning_content" in normalized and "must be passed back" in normalized
-
-
-def compact_messages_for_reasoning_retry(
-    messages: Sequence[dict[str, Any]],
-    *,
-    assistant_turn_budget: int = 3,
-) -> list[dict[str, Any]]:
-    safe_messages = [safe_jsonable(message) for message in messages]
-    if len(safe_messages) <= 2:
-        return list(safe_messages)
-    # Reset to the original task framing only. This avoids replaying any prior
-    # assistant turns that may require provider-specific hidden reasoning state.
-    return list(safe_messages[:2])
 
 
 def default_llm_config() -> dict:
@@ -810,43 +808,20 @@ class MultiTurnReactAgent(BaseAgent):
                 return finalize(result_text, termination, error=termination)
             round_index += 1
             num_llm_calls_available -= 1
-            reasoning_error_recovery_attempted = False
-            while True:
-                llm_request_messages = safe_jsonable(messages)
-                llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
-                trace_writer.append(
-                    role="runtime",
-                    text="",
-                    turn_index=round_index,
-                    capture_type="llm_call",
-                    payload=llm_call_trace_payload(
-                        request_messages=llm_request_messages,
-                        response=llm_reply,
-                        model_name=self.model,
-                        native_tools=self._native_tools,
-                    ),
-                )
-                error_text = llm_reply.get("error", "") if isinstance(llm_reply, dict) else ""
-                if (
-                    isinstance(llm_reply, dict)
-                    and llm_reply.get("status") == "error"
-                    and not reasoning_error_recovery_attempted
-                    and is_reasoning_replay_error(error_text)
-                ):
-                    reasoning_error_recovery_attempted = True
-                    compacted_messages = compact_messages_for_reasoning_retry(messages)
-                    recovery_text = (
-                        "Runtime note: the provider returned a thinking-mode reasoning replay protocol error. "
-                        "The conversation history was reset to the original task prompt. Continue from the current "
-                        "workspace state, inspect existing files in code/, outputs/, and report/images/, and "
-                        "re-read any needed files before proceeding."
-                    )
-                    messages = compacted_messages + [{"role": "user", "content": recovery_text}]
-                    trace_writer.append(role="user", text=recovery_text, turn_index=round_index)
-                    session_state.last_input_tokens = None
-                    persist_state(error=error_text)
-                    continue
-                break
+            llm_request_messages = safe_jsonable(messages)
+            llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
+            trace_writer.append(
+                role="runtime",
+                text="",
+                turn_index=round_index,
+                capture_type="llm_call",
+                payload=llm_call_trace_payload(
+                    request_messages=llm_request_messages,
+                    response=llm_reply,
+                    model_name=self.model,
+                    native_tools=self._native_tools,
+                ),
+            )
             session_state.last_input_tokens = input_tokens_from_usage(
                 llm_reply.get("usage") if isinstance(llm_reply, dict) else None
             )
@@ -902,6 +877,12 @@ class MultiTurnReactAgent(BaseAgent):
                     finish_reason=finish_reason,
                     error=deprecated_protocol,
                 )
+                retry_assistant_message = assistant_retry_history_message(
+                    content=assistant_content,
+                    reasoning_content=assistant_reasoning,
+                )
+                if retry_assistant_message is not None:
+                    messages.append(retry_assistant_message)
                 correction_text = (
                     "Error: The previous assistant turn used the deprecated text-tag protocol. "
                     "Do not emit <tool_call>, <tool_response>, <think>, or <answer> in plain text. "
@@ -929,6 +910,12 @@ class MultiTurnReactAgent(BaseAgent):
                     finish_reason=finish_reason,
                     error=protocol_error,
                 )
+                retry_assistant_message = assistant_retry_history_message(
+                    content=assistant_content,
+                    reasoning_content=assistant_reasoning,
+                )
+                if retry_assistant_message is not None:
+                    messages.append(retry_assistant_message)
                 correction_text = (
                     "Error: The previous assistant turn hit the output limit while emitting native tool calls, "
                     "so none of those tool calls were executed. Re-emit the needed tool calls in a smaller form. "
@@ -952,6 +939,12 @@ class MultiTurnReactAgent(BaseAgent):
                     finish_reason=finish_reason,
                     error=protocol_error,
                 )
+                retry_assistant_message = assistant_retry_history_message(
+                    content=assistant_content,
+                    reasoning_content=assistant_reasoning,
+                )
+                if retry_assistant_message is not None:
+                    messages.append(retry_assistant_message)
                 correction_text = (
                     "Error: The previous assistant turn was invalid because it mixed native tool calls and plain result text. "
                     "A tool-using assistant turn must contain only tool calls and no free-form result text. "
@@ -1076,6 +1069,12 @@ class MultiTurnReactAgent(BaseAgent):
                     finish_reason=finish_reason,
                     error=protocol_error,
                 )
+                retry_assistant_message = assistant_retry_history_message(
+                    content=assistant_content,
+                    reasoning_content=assistant_reasoning,
+                )
+                if retry_assistant_message is not None:
+                    messages.append(retry_assistant_message)
                 correction_text = (
                     "Error: The previous assistant turn was empty. "
                     "If tools are needed, use native tool calling. Otherwise return the final result text."

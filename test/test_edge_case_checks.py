@@ -491,6 +491,115 @@ def check_reasoning_content_is_preserved_across_tool_rounds() -> tuple[bool, str
     return ok, detail
 
 
+def check_reasoning_content_is_preserved_across_invalid_retry_turns() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "reasoning_content_invalid_retry"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.second_round_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": "I have already solved it.",
+                    "tool_calls": [
+                        {
+                            "id": "call_write_plan",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "outputs/marker.txt",
+                                        "content": "tool completed\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                    "reasoning_content": "deepseek-invalid-turn-reasoning",
+                    "raw_message": {
+                        "role": "assistant",
+                        "content": "I have already solved it.",
+                        "tool_calls": [
+                            {
+                                "id": "call_write_plan",
+                                "type": "function",
+                                "function": {
+                                    "name": "Write",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "outputs/marker.txt",
+                                            "content": "tool completed\n",
+                                        }
+                                    ),
+                                },
+                                "index": 0,
+                            }
+                        ],
+                        "reasoning_content": "deepseek-invalid-turn-reasoning",
+                    },
+                }
+            self.second_round_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Preserve reasoning content after invalid retry turn", workspace_root=str(case_dir))
+    assistant_messages = [msg for msg in agent.second_round_messages if msg.get("role") == "assistant"]
+    preserved_message = next(
+        (
+            msg
+            for msg in assistant_messages
+            if msg.get("reasoning_content") == "deepseek-invalid-turn-reasoning"
+            and msg.get("content") == "I have already solved it."
+            and not msg.get("tool_calls")
+        ),
+        None,
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "assistant_messages": assistant_messages,
+            "second_round_messages": agent.second_round_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and preserved_message is not None
+    )
+    return ok, detail
+
+
 def check_double_encoded_tool_arguments_are_unwrapped() -> tuple[bool, str]:
     from agent_base.react_agent import parse_tool_arguments_list
 
@@ -635,10 +744,10 @@ def check_truncated_tool_call_turn_is_replayed_without_execution() -> tuple[bool
     return ok, detail
 
 
-def check_reasoning_replay_error_triggers_compacted_retry() -> tuple[bool, str]:
+def check_reasoning_replay_error_is_reported_without_recovery() -> tuple[bool, str]:
     from agent_base.react_agent import MultiTurnReactAgent
 
-    case_dir = TMP_DIR / "reasoning_replay_error_retry"
+    case_dir = TMP_DIR / "reasoning_replay_error_no_recovery"
     shutil.rmtree(case_dir, ignore_errors=True)
     case_dir.mkdir(parents=True, exist_ok=True)
 
@@ -719,18 +828,7 @@ def check_reasoning_replay_error_triggers_compacted_retry() -> tuple[bool, str]:
             }
 
     agent = FakeAgent()
-    session = agent._run_session("Recover after reasoning replay error", workspace_root=str(case_dir))
-    recovery_note = next(
-        (
-            msg
-            for msg in agent.retry_messages
-            if msg.get("role") == "user"
-            and "thinking-mode reasoning replay protocol error" in str(msg.get("content", ""))
-        ),
-        None,
-    )
-    assistant_messages = [msg for msg in agent.retry_messages if msg.get("role") == "assistant"]
-    tool_messages = [msg for msg in agent.retry_messages if msg.get("role") == "tool"]
+    session = agent._run_session("Report reasoning replay error", workspace_root=str(case_dir))
     detail = json.dumps(
         {
             "termination": session.get("termination"),
@@ -742,12 +840,10 @@ def check_reasoning_replay_error_triggers_compacted_retry() -> tuple[bool, str]:
         indent=2,
     )
     ok = (
-        session.get("termination") == "result"
-        and session.get("result_text") == "done"
-        and agent._call_count == 3
-        and recovery_note is not None
-        and assistant_messages == [{"role": "assistant", "content": "done"}]
-        and not tool_messages
+        session.get("termination") == "llm api error"
+        and "must be passed back to the API" in str(session.get("result_text", ""))
+        and agent._call_count == 2
+        and agent.retry_messages == []
     )
     return ok, detail
 
@@ -1381,7 +1477,8 @@ def main() -> int:
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
         ("DeepSeek ReadImage fallback", check_deepseek_readimage_falls_back_to_text_only_context),
         ("Reasoning content preserved", check_reasoning_content_is_preserved_across_tool_rounds),
-        ("Reasoning replay error retry", check_reasoning_replay_error_triggers_compacted_retry),
+        ("Reasoning content preserved on invalid retry", check_reasoning_content_is_preserved_across_invalid_retry_turns),
+        ("Reasoning replay error reported", check_reasoning_replay_error_is_reported_without_recovery),
         ("Compact trigger parser", check_compact_trigger_token_parser_supports_k_suffix),
         ("Context compaction persists state", check_context_compaction_persists_summary_and_session_state),
         ("Context compaction refreshes memory", check_context_compaction_refreshes_existing_memory_without_recursive_summary),
