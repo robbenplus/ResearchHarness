@@ -286,6 +286,7 @@ This makes direct harness runs readable without requiring debug-only logs.
 
 - `WebSearch`
 - `ScholarSearch`
+- `DownloadPDF`
 - `WebFetch`
 
 ### Local Files
@@ -315,6 +316,7 @@ mindmap
     Web
       WebSearch
       ScholarSearch
+      DownloadPDF
       WebFetch
     Files
       Glob

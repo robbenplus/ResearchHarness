@@ -42,7 +42,8 @@ The current tool set is:
 | `Edit` | Local files | `path`, `patch` | Apply a targeted patch to a local text file. | Expects unified-diff / hunk-style input. Context-based matching, not a full `patch(1)` implementation. |
 | `Bash` | Runtime | `command`, `timeout?`, `workdir?` | Run one-shot shell commands for deterministic local execution, parsing, and validation. | Returns `stdout` and `stderr`. Primary local execution tool for short Python, `rg`, `find`, `git`, and structured local processing. |
 | `WebSearch` | Web | `query` | Perform general web search over one or more complementary queries. | Returns a text summary headed by `## Web Results` with title, link, snippet, and date/source when available. Uses Serper. |
-| `ScholarSearch` | Web | `query` | Search academic results such as papers, year, abstract, and citations. | Returns a text summary headed by `## Scholar Results` with title, PDF link, publication info, year, citation count, and abstract. Uses Serper Scholar. |
+| `ScholarSearch` | Web | `query`, `max_results?`, `year_from?`, `year_to?`, `providers?` | Search academic results through a two-layer flow: Serper finds clues, then arXiv/Semantic Scholar/OpenAlex confirm structure. | Returns a text summary headed by `## Scholar Results` plus structured JSON, confirmed metadata, and ranked PDF candidates. |
+| `DownloadPDF` | Web | `url?`, `title?`, `doi?`, `arxiv_id?`, `pdf_candidates?`, `output_path?`, `output_dir?`, `overwrite?` | Download a trusted/open PDF candidate and validate it before saving. | Rejects HTML, landing pages, tiny files, non-`%PDF` payloads, and writes outside the workspace. Returns status, path, source URL, bytes, and attempted URLs. |
 | `WebFetch` | Web | `url`, `goal` | Fetch a page, extract evidence relevant to a concrete goal, and summarize it. | Uses Jina Reader plus the configured summary model. Returns evidence-focused text rather than raw HTML. |
 | `TerminalStart` | Runtime | `cwd?`, `shell?`, `rows?`, `cols?` | Start a persistent terminal session. | Returns session metadata such as `session_id`, `pid`, `cwd`, `shell`, `alive`, and `returncode`. |
 | `TerminalWrite` | Runtime | `session_id`, `input`, `append_newline?`, `yield_time_ms?`, `max_output_chars?` | Send input to a persistent terminal session and read incremental output. | Best for stateful shells, REPLs, and long-running foreground processes. |
@@ -300,22 +301,54 @@ Returns:
 Purpose:
 
 - Academic search.
-- Return paper title, year, abstract, citation count, and related metadata.
+- Return confirmed paper title, authors, year, abstract, citation count, identifiers, and PDF candidates.
 
 Arguments:
 
 - `query`: array of strings, at least one query
+- `max_results`: optional maximum confirmed papers per query
+- `year_from`, `year_to`: optional publication-year bounds
+- `providers`: optional confirmation providers from `arxiv`, `semantic_scholar`, `openalex`
 
 Behavior:
 
-- Calls Serper's Google Scholar endpoint.
-- Reads `SERPER_KEY_ID` at runtime.
+- Calls Serper first to collect high-recall clues.
+- Confirms clues through structured sources: arXiv, Semantic Scholar, and OpenAlex.
+- Keeps unconfirmed Serper hits in a separate `unverified_clues` section.
+- Reads `SERPER_KEY_ID` at runtime; Semantic Scholar and OpenAlex keys are optional.
 
 Returns:
 
 - query summary text
 - `## Scholar Results`
-- title, PDF link, `publicationInfo`, year, citation count, and abstract
+- confirmed title, authors, publication metadata, identifiers, abstract, and ranked `pdf_candidates`
+- `## Structured JSON` with `papers` and `unverified_clues`
+
+## DownloadPDF
+
+Purpose:
+
+- Download a PDF from trusted/open candidates and validate it before saving.
+
+Arguments:
+
+- `url`: optional explicit candidate URL
+- `title`, `doi`, `arxiv_id`: optional metadata for candidate construction and filename generation
+- `pdf_candidates`: optional candidate list from `ScholarSearch`
+- `output_path` or `output_dir`: destination inside the workspace
+- `overwrite`: optional boolean, default false
+
+Behavior:
+
+- Expands arXiv abs links to direct PDF links.
+- Tries explicit, arXiv, OpenReview, Semantic Scholar OA, OpenAlex OA, and Unpaywall candidates.
+- Rejects HTML, login/landing pages, files that do not start with `%PDF`, and files smaller than the minimum PDF threshold.
+- Writes through a temporary `.part` file and only replaces the destination after validation.
+
+Returns:
+
+- `status`: `success`, `failed`, or `needs_manual`
+- `validated`, `path`, `source_url`, `bytes`, `failure_reason`, and `attempted_urls`
 
 ## WebFetch
 
