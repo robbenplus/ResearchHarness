@@ -156,7 +156,7 @@ python3 -m pip install -r requirements.txt
 
 ### 2. Configure
 
-Copy `.env.example` to `.env` and fill in the keys you need.
+Copy `.env.example` to `.env` and fill in all required variables.
 
 ResearchHarness currently talks to OpenAI-compatible chat-completions APIs. In practice, that means GPT, Gemini, Qwen, GLM, and other model families can be used when they are exposed through a compatible endpoint.
 
@@ -165,12 +165,12 @@ Required variables:
 - `API_KEY`
 - `API_BASE`
 - `MODEL_NAME`
-
-Optional variables:
-
 - `SERPER_KEY_ID`
 - `JINA_API_KEYS`
 - `MINERU_TOKEN`
+
+Optional variables:
+
 - `WORKSPACE_ROOT`
 - `MAX_LLM_CALL_PER_RUN`
 - `MAX_AGENT_ROUNDS`
@@ -198,11 +198,14 @@ Minimal example:
 API_KEY="your_api_key"
 API_BASE="https://your-openai-compatible-endpoint/v1"
 MODEL_NAME="gpt-5.4"
+SERPER_KEY_ID="your_serper_key"
+JINA_API_KEYS="your_jina_key"
+MINERU_TOKEN="your_mineru_token"
 ```
 
 Sampling defaults and retry policy live in code. Override them programmatically when needed instead of storing them in `.env`.
 
-Capability-specific requirements:
+Required service key sources:
 
 - `WebSearch` / `ScholarSearch` require `SERPER_KEY_ID` from https://serper.dev/
 - `WebFetch` requires `JINA_API_KEYS` from https://jina.ai/
