@@ -1,6 +1,7 @@
 from importlib import import_module
 
 __all__ = [
+    "AskUser",
     "Bash",
     "DownloadPDF",
     "Edit",
@@ -21,6 +22,7 @@ __all__ = [
 ]
 
 _EXPORT_TO_MODULE = {
+    "AskUser": "agent_base.tools.tool_user",
     "Bash": "agent_base.tools.tool_runtime",
     "DownloadPDF": "agent_base.tools.tool_web",
     "Edit": "agent_base.tools.tool_file",

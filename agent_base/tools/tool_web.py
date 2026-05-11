@@ -46,6 +46,11 @@ PAYWALL_DOMAINS = frozenset(
         "oup.com",
     }
 )
+DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
+DEFAULT_LLM_MAX_RETRIES = 10
+DEFAULT_TEMPERATURE = 0.6
+DEFAULT_TOP_P = 0.95
+DEFAULT_PRESENCE_PENALTY = 1.1
 
 
 def search_debug_enabled() -> bool:
@@ -1222,31 +1227,25 @@ class WebFetch(ToolBase):
         super().__init__(cfg)
         self._summary_client: Optional[OpenAI] = None
         self._summary_api_base: Optional[str] = None
-        self._summary_model_name = os.environ.get(
-            "SUMMARY_MODEL_NAME",
-            os.environ.get("MODEL_NAME", DEFAULT_SUMMARY_MODEL_NAME),
-        )
+        self._summary_model_name = os.environ.get("MODEL_NAME", "").strip()
         self._summary_timeout_seconds = float(
-            os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_WEBFETCH_TIMEOUT_SECONDS)))
+            os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS))
         )
-        self._summary_temperature = float(
-            os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", str(DEFAULT_WEBFETCH_SUMMARY_TEMPERATURE))
-        )
+        self._summary_temperature = float(os.getenv("TEMPERATURE", str(DEFAULT_TEMPERATURE)))
+        self._summary_top_p = float(os.getenv("TOP_P", str(DEFAULT_TOP_P)))
+        self._summary_presence_penalty = float(os.getenv("PRESENCE_PENALTY", str(DEFAULT_PRESENCE_PENALTY)))
 
     def _ensure_summary_client(self) -> Optional[OpenAI]:
         if self._summary_client is not None:
             return self._summary_client
         self._summary_api_base = os.environ.get("API_BASE")
-        self._summary_model_name = os.environ.get(
-            "SUMMARY_MODEL_NAME",
-            os.environ.get("MODEL_NAME", DEFAULT_SUMMARY_MODEL_NAME),
-        )
+        self._summary_model_name = os.environ.get("MODEL_NAME", "").strip()
         self._summary_timeout_seconds = float(
-            os.getenv("WEBFETCH_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_WEBFETCH_TIMEOUT_SECONDS)))
+            os.getenv("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS))
         )
-        self._summary_temperature = float(
-            os.getenv("WEBFETCH_SUMMARY_TEMPERATURE", str(DEFAULT_WEBFETCH_SUMMARY_TEMPERATURE))
-        )
+        self._summary_temperature = float(os.getenv("TEMPERATURE", str(DEFAULT_TEMPERATURE)))
+        self._summary_top_p = float(os.getenv("TOP_P", str(DEFAULT_TOP_P)))
+        self._summary_presence_penalty = float(os.getenv("PRESENCE_PENALTY", str(DEFAULT_PRESENCE_PENALTY)))
         if not self._summary_api_base:
             return None
         self._summary_client = OpenAI(
@@ -1307,6 +1306,8 @@ class WebFetch(ToolBase):
         client = self._ensure_summary_client()
         if client is None or not self._summary_api_base:
             return "[WebFetch] Summary model error: API_BASE is not set."
+        if not self._summary_model_name:
+            return "[WebFetch] Summary model error: MODEL_NAME is not set."
         last_error = "unknown summary-model error"
         for attempt in range(max_retries):
             remaining = self._remaining_budget_seconds(runtime_deadline)
@@ -1326,6 +1327,8 @@ class WebFetch(ToolBase):
                     request_kwargs,
                     model_name=self._summary_model_name,
                     temperature=self._summary_temperature,
+                    top_p=self._summary_top_p,
+                    presence_penalty=self._summary_presence_penalty,
                 )
                 chat_response = request_client.chat.completions.create(**request_kwargs)
                 content = chat_response.choices[0].message.content
@@ -1389,7 +1392,7 @@ class WebFetch(ToolBase):
 
     def readpage_jina(self, url: str, goal: str, runtime_deadline: Optional[float] = None) -> str:
         summary_page_func = self.call_server
-        max_retries = int(os.getenv("VISIT_SERVER_MAX_RETRIES", 1))
+        max_retries = int(os.getenv("LLM_MAX_RETRIES", str(DEFAULT_LLM_MAX_RETRIES)))
 
         content = self.html_readpage_jina(url, runtime_deadline=runtime_deadline)
 

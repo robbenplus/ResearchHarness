@@ -34,6 +34,31 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text).replace("\r", "")
 
 
+def check_workspace_root_is_created_when_missing() -> tuple[bool, str]:
+    from agent_base.tools.tooling import normalize_workspace_root
+
+    case_dir = TMP_DIR / "workspace_root_auto_create" / "fresh_workspace"
+    shutil.rmtree(case_dir.parent, ignore_errors=True)
+    resolved = normalize_workspace_root(case_dir)
+    ok = resolved == case_dir.resolve() and resolved.is_dir()
+    return ok, json.dumps({"resolved": str(resolved), "exists": resolved.exists()}, indent=2)
+
+
+def check_llm_hard_timeout_interrupts_blocking_call() -> tuple[bool, str]:
+    from agent_base.react_agent import LLMHardTimeoutError, llm_hard_timeout
+
+    start = time.time()
+    try:
+        with llm_hard_timeout(0.2):
+            time.sleep(5)
+    except LLMHardTimeoutError as exc:
+        elapsed = time.time() - start
+        ok = elapsed < 1.5
+        return ok, json.dumps({"elapsed_seconds": elapsed, "error": str(exc)}, indent=2)
+    elapsed = time.time() - start
+    return False, json.dumps({"elapsed_seconds": elapsed, "error": "timeout did not fire"}, indent=2)
+
+
 def check_readpdf_relative_image_path() -> tuple[bool, str]:
     from agent_base.tools.tool_file import ReadPDF
 
@@ -521,43 +546,13 @@ def check_reasoning_content_is_preserved_across_invalid_retry_turns() -> tuple[b
             if self._turn == 1:
                 return {
                     "status": "ok",
-                    "finish_reason": "tool_calls",
-                    "content": "I have already solved it.",
-                    "tool_calls": [
-                        {
-                            "id": "call_write_plan",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": "outputs/marker.txt",
-                                        "content": "tool completed\n",
-                                    }
-                                ),
-                            },
-                        }
-                    ],
+                    "finish_reason": "stop",
+                    "content": "<answer>I have already solved it.</answer>",
+                    "tool_calls": [],
                     "reasoning_content": "deepseek-invalid-turn-reasoning",
                     "raw_message": {
                         "role": "assistant",
-                        "content": "I have already solved it.",
-                        "tool_calls": [
-                            {
-                                "id": "call_write_plan",
-                                "type": "function",
-                                "function": {
-                                    "name": "Write",
-                                    "arguments": json.dumps(
-                                        {
-                                            "path": "outputs/marker.txt",
-                                            "content": "tool completed\n",
-                                        }
-                                    ),
-                                },
-                                "index": 0,
-                            }
-                        ],
+                        "content": "<answer>I have already solved it.</answer>",
                         "reasoning_content": "deepseek-invalid-turn-reasoning",
                     },
                 }
@@ -577,7 +572,7 @@ def check_reasoning_content_is_preserved_across_invalid_retry_turns() -> tuple[b
             msg
             for msg in assistant_messages
             if msg.get("reasoning_content") == "deepseek-invalid-turn-reasoning"
-            and msg.get("content") == "I have already solved it."
+            and msg.get("content") == "<answer>I have already solved it.</answer>"
             and not msg.get("tool_calls")
         ),
         None,
@@ -596,6 +591,119 @@ def check_reasoning_content_is_preserved_across_invalid_retry_turns() -> tuple[b
         session.get("termination") == "result"
         and session.get("result_text") == "done"
         and preserved_message is not None
+    )
+    return ok, detail
+
+
+def check_mixed_text_and_tool_calls_are_executed() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "mixed_text_tool_calls_allowed"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["Write"],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+            self._turn = 0
+            self.second_round_messages = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self._turn += 1
+            if self._turn == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": "I will write the marker file.",
+                    "tool_calls": [
+                        {
+                            "id": "call_write_marker",
+                            "type": "function",
+                            "function": {
+                                "name": "Write",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": "outputs/marker.txt",
+                                        "content": "mixed turn executed\n",
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                    "reasoning_content": "mixed-turn-reasoning",
+                    "raw_message": {
+                        "role": "assistant",
+                        "content": "I will write the marker file.",
+                        "tool_calls": [
+                            {
+                                "id": "call_write_marker",
+                                "type": "function",
+                                "function": {
+                                    "name": "Write",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "outputs/marker.txt",
+                                            "content": "mixed turn executed\n",
+                                        }
+                                    ),
+                                },
+                                "index": 0,
+                            }
+                        ],
+                        "reasoning_content": "mixed-turn-reasoning",
+                    },
+                }
+            self.second_round_messages = msgs
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Allow mixed text and tool calls", workspace_root=str(case_dir))
+    marker_path = case_dir / "outputs" / "marker.txt"
+    assistant_messages = [msg for msg in agent.second_round_messages if msg.get("role") == "assistant"]
+    mixed_message = next(
+        (
+            msg
+            for msg in assistant_messages
+            if msg.get("content") == "I will write the marker file."
+            and msg.get("reasoning_content") == "mixed-turn-reasoning"
+            and msg.get("tool_calls")
+        ),
+        None,
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "result_text": session.get("result_text"),
+            "marker_exists": marker_path.exists(),
+            "marker_text": marker_path.read_text(encoding="utf-8") if marker_path.exists() else "",
+            "assistant_messages": assistant_messages,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("result_text") == "done"
+        and marker_path.exists()
+        and marker_path.read_text(encoding="utf-8") == "mixed turn executed\n"
+        and mixed_message is not None
     )
     return ok, detail
 
@@ -1408,9 +1516,11 @@ def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, s
         isinstance(claude_client.request_kwargs, dict)
         and "temperature" not in claude_client.request_kwargs
         and "top_p" not in claude_client.request_kwargs
+        and "presence_penalty" not in claude_client.request_kwargs
         and isinstance(gpt_client.request_kwargs, dict)
         and gpt_client.request_kwargs.get("temperature") == 0.2
         and gpt_client.request_kwargs.get("top_p") == 0.7
+        and gpt_client.request_kwargs.get("presence_penalty") == 0.0
     )
     return ok, detail
 
@@ -1438,6 +1548,8 @@ def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool
     claude_fetch._summary_api_base = "http://fake"
     claude_fetch._summary_model_name = "anthropic/claude-3-5-sonnet"
     claude_fetch._summary_temperature = 0.3
+    claude_fetch._summary_top_p = 0.8
+    claude_fetch._summary_presence_penalty = 0.2
     claude_result = claude_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
 
     gpt_fetch = WebFetch()
@@ -1445,6 +1557,8 @@ def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool
     gpt_fetch._summary_api_base = "http://fake"
     gpt_fetch._summary_model_name = "gpt-5.4"
     gpt_fetch._summary_temperature = 0.3
+    gpt_fetch._summary_top_p = 0.8
+    gpt_fetch._summary_presence_penalty = 0.2
     gpt_result = gpt_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
 
     detail = json.dumps(
@@ -1460,8 +1574,12 @@ def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool
     ok = (
         isinstance(claude_fetch._summary_client.request_kwargs, dict)
         and "temperature" not in claude_fetch._summary_client.request_kwargs
+        and "top_p" not in claude_fetch._summary_client.request_kwargs
+        and "presence_penalty" not in claude_fetch._summary_client.request_kwargs
         and isinstance(gpt_fetch._summary_client.request_kwargs, dict)
         and gpt_fetch._summary_client.request_kwargs.get("temperature") == 0.3
+        and gpt_fetch._summary_client.request_kwargs.get("top_p") == 0.8
+        and gpt_fetch._summary_client.request_kwargs.get("presence_penalty") == 0.2
     )
     return ok, detail
 
@@ -1471,13 +1589,16 @@ def main() -> int:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     checks = [
+        ("Workspace root auto-create", check_workspace_root_is_created_when_missing),
         ("ReadPDF relative image path", check_readpdf_relative_image_path),
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
+        ("LLM hard timeout", check_llm_hard_timeout_interrupts_blocking_call),
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
         ("DeepSeek ReadImage fallback", check_deepseek_readimage_falls_back_to_text_only_context),
         ("Reasoning content preserved", check_reasoning_content_is_preserved_across_tool_rounds),
         ("Reasoning content preserved on invalid retry", check_reasoning_content_is_preserved_across_invalid_retry_turns),
+        ("Mixed text and tool calls executed", check_mixed_text_and_tool_calls_are_executed),
         ("Reasoning replay error reported", check_reasoning_replay_error_is_reported_without_recovery),
         ("Compact trigger parser", check_compact_trigger_token_parser_supports_k_suffix),
         ("Context compaction persists state", check_context_compaction_persists_summary_and_session_state),

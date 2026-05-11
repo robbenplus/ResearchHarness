@@ -1,7 +1,10 @@
 import argparse
+from contextlib import contextmanager
 import json
 import os
+import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Type
 
@@ -18,6 +21,7 @@ from agent_base.trace_utils import FlatTraceWriter
 from agent_base.tools.tooling import normalize_workspace_root
 from agent_base.tools.tool_file import Edit, Glob, Grep, Read, ReadImage, ReadPDF, Write
 from agent_base.tools.tool_runtime import Bash, TerminalInterrupt, TerminalKill, TerminalRead, TerminalStart, TerminalWrite
+from agent_base.tools.tool_user import AskUser
 from agent_base.tools.tool_web import DownloadPDF, ScholarSearch, WebFetch, WebSearch
 from agent_base.utils import PROJECT_ROOT, env_flag, load_dotenv, safe_jsonable
 
@@ -38,6 +42,7 @@ AVAILABLE_TOOLS = [
     ScholarSearch(),
     DownloadPDF(),
     WebFetch(),
+    AskUser(),
     TerminalStart(),
     TerminalWrite(),
     TerminalRead(),
@@ -57,6 +62,36 @@ DEFAULT_TEMPERATURE = 0.6
 DEFAULT_TOP_P = 0.95
 DEFAULT_PRESENCE_PENALTY = 1.1
 DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
+
+
+class LLMHardTimeoutError(TimeoutError):
+    pass
+
+
+@contextmanager
+def llm_hard_timeout(timeout_seconds: float):
+    if (
+        timeout_seconds <= 0
+        or threading.current_thread() is not threading.main_thread()
+        or not hasattr(signal, "SIGALRM")
+    ):
+        yield
+        return
+
+    def _handle_timeout(signum, frame):
+        raise LLMHardTimeoutError(f"LLM request exceeded hard timeout of {timeout_seconds:.1f}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 def today_date():
@@ -483,11 +518,12 @@ class MultiTurnReactAgent(BaseAgent):
             try:
                 if debug_enabled():
                     print(f"--- Attempting to call the service, try {attempt + 1}/{max_tries} ---")
-                request_client = (
-                    self._llm_client.with_options(timeout=min(self._llm_timeout_seconds, max(remaining, 0.001)))
+                request_timeout = (
+                    min(self._llm_timeout_seconds, max(remaining, 0.001))
                     if remaining is not None
-                    else self._llm_client
+                    else self._llm_timeout_seconds
                 )
+                request_client = self._llm_client.with_options(timeout=request_timeout)
                 request_kwargs = dict(
                     model=self.model,
                     messages=msgs,
@@ -504,17 +540,18 @@ class MultiTurnReactAgent(BaseAgent):
                         temperature if temperature is not None else self.llm_generate_cfg.get("temperature", 0.6)
                     ),
                     top_p=top_p if top_p is not None else self.llm_generate_cfg.get("top_p", 0.95),
+                    presence_penalty=(
+                        presence_penalty
+                        if presence_penalty is not None
+                        else self.llm_generate_cfg.get("presence_penalty", 1.1)
+                    ),
                 )
                 if include_native_tools and self._native_tools:
                     request_kwargs["tools"] = self._native_tools
                     request_kwargs["tool_choice"] = "auto"
                     request_kwargs["parallel_tool_calls"] = True
-                request_kwargs["presence_penalty"] = (
-                    presence_penalty
-                    if presence_penalty is not None
-                    else self.llm_generate_cfg.get("presence_penalty", 1.1)
-                )
-                chat_response = request_client.chat.completions.create(**request_kwargs)
+                with llm_hard_timeout(request_timeout):
+                    chat_response = request_client.chat.completions.create(**request_kwargs)
                 choice = chat_response.choices[0]
                 message = choice.message
                 content = message.content
@@ -540,7 +577,7 @@ class MultiTurnReactAgent(BaseAgent):
                     if debug_enabled():
                         print(f"Warning: Attempt {attempt + 1} received an empty response.")
 
-            except (APIError, APIConnectionError, APITimeoutError) as e:
+            except (APIError, APIConnectionError, APITimeoutError, LLMHardTimeoutError) as e:
                 last_error = str(e)
                 if debug_enabled():
                     print(f"Error: Attempt {attempt + 1} failed with an API or network error: {e}")
@@ -924,40 +961,6 @@ class MultiTurnReactAgent(BaseAgent):
                     "Do not resend the same oversized truncated tool call."
                 )
                 messages.append({"role": "user", "content": correction_text})
-                trace_writer.append(role="user", text=correction_text, turn_index=round_index)
-                persist_state(error=protocol_error)
-                continue
-
-            if assistant_tool_calls and assistant_has_meaningful_text(assistant_content):
-                protocol_error = "assistant mixed native tool calls and plain result text"
-                trace_writer.append(
-                    role="assistant",
-                    text=assistant_text.strip(),
-                    turn_index=round_index,
-                    tool_call_ids=assistant_tool_call_ids,
-                    tool_names=assistant_tool_names,
-                    tool_arguments=assistant_tool_arguments,
-                    finish_reason=finish_reason,
-                    error=protocol_error,
-                )
-                retry_assistant_message = assistant_retry_history_message(
-                    content=assistant_content,
-                    reasoning_content=assistant_reasoning,
-                )
-                if retry_assistant_message is not None:
-                    messages.append(retry_assistant_message)
-                correction_text = (
-                    "Error: The previous assistant turn was invalid because it mixed native tool calls and plain result text. "
-                    "A tool-using assistant turn must contain only tool calls and no free-form result text. "
-                    "No tools from that invalid turn were executed. Discard the guessed result text from that turn; it may be wrong and was not accepted. "
-                    "If you still need tools, re-emit only the required tool calls. If no more tools are needed, return only the final result text."
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": correction_text,
-                    }
-                )
                 trace_writer.append(role="user", text=correction_text, turn_index=round_index)
                 persist_state(error=protocol_error)
                 continue

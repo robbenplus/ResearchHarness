@@ -71,6 +71,10 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 
 ## 📰 News
 
+- **2026-04-30: Interactive `AskUser` tool**
+  ResearchHarness now includes an `AskUser` native tool for essential human clarification in interactive runs, while the ResearchClawBench adapter explicitly excludes it to keep benchmark runs non-interactive.
+- **2026-04-30: Workspace roots are created automatically**
+  Explicit `workspace_root` paths are now created at run startup when missing, while tool path resolution still stays bounded inside the workspace.
 - **2026-04-25: Automatic context compaction for long runs**
   ResearchHarness now supports built-in context compaction for long multi-step tasks instead of relying only on a growing raw message list.
 - **2026-04-25: Configurable compaction trigger**
@@ -152,36 +156,60 @@ python3 -m pip install -r requirements.txt
 
 ### 2. Configure
 
-Copy `.env.example` to `.env` and fill in the keys you need.
+Copy `.env.example` to `.env` and fill in all required variables.
 
 ResearchHarness currently talks to OpenAI-compatible chat-completions APIs. In practice, that means GPT, Gemini, Qwen, GLM, and other model families can be used when they are exposed through a compatible endpoint.
 
-Important variables:
+Required variables:
 
 - `API_KEY`
 - `API_BASE`
 - `MODEL_NAME`
-- `SUMMARY_MODEL_NAME`
 - `SERPER_KEY_ID`
 - `JINA_API_KEYS`
 - `MINERU_TOKEN`
 
+Optional variables:
+
+- `WORKSPACE_ROOT`
+- `MAX_LLM_CALL_PER_RUN`
+- `MAX_AGENT_ROUNDS`
+- `MAX_AGENT_RUNTIME_SECONDS`
+- `LLM_TIMEOUT_SECONDS`
+- `LLM_MAX_OUTPUT_TOKENS`
+- `MAX_INPUT_TOKENS`
+- `LLM_MAX_RETRIES`
+- `TEMPERATURE`
+- `TOP_P`
+- `PRESENCE_PENALTY`
+- `AUTO_COMPACT_TRIGGER_TOKENS`
+- `IMAGE_PART_TOKEN_ESTIMATE`
+- `LLM_IMAGE_MAX_EDGE`
+- `LLM_IMAGE_MAX_BYTES`
+- `LLM_IMAGE_JPEG_QUALITY`
+- `DEBUG_AGENT`
+- `DEBUG_SEARCH`
+- `DEBUG_SCHOLAR`
+- `DEBUG_VISIT`
+
 Minimal example:
 
 ```env
-API_KEY=your_api_key
-API_BASE=https://your-openai-compatible-endpoint/v1
-MODEL_NAME=gpt-5.4
-# SUMMARY_MODEL_NAME=gpt-5.4
+API_KEY="your_api_key"
+API_BASE="https://your-openai-compatible-endpoint/v1"
+MODEL_NAME="gpt-5.4"
+SERPER_KEY_ID="your_serper_key"
+JINA_API_KEYS="your_jina_key"
+MINERU_TOKEN="your_mineru_token"
 ```
 
-Sampling defaults, retry policy, and runtime limits live in code. Override them programmatically when needed instead of storing them in `.env`.
+Sampling defaults and retry policy live in code. Override them programmatically when needed instead of storing them in `.env`.
 
-Capability-specific requirements:
+Required service key sources:
 
-- `WebSearch` / `ScholarSearch` require `SERPER_KEY_ID`
-- `WebFetch` requires `JINA_API_KEYS`
-- `ReadPDF` requires `MINERU_TOKEN` and `structai`
+- `WebSearch` / `ScholarSearch` require `SERPER_KEY_ID` from https://serper.dev/
+- `WebFetch` requires `JINA_API_KEYS` from https://jina.ai/
+- `ReadPDF` requires `MINERU_TOKEN` from https://mineru.net/ and [`structai`](https://github.com/black-yt/structai)
 
 ### 2.5 Extending the Base Agent
 
@@ -308,6 +336,10 @@ This makes direct harness runs readable without requiring debug-only logs.
 - `TerminalInterrupt`
 - `TerminalKill`
 
+### Human Interaction
+
+- `AskUser`
+
 More detailed tool documentation lives in [agent_base/tools/README.md](agent_base/tools/README.md).
 
 ```mermaid
@@ -333,6 +365,8 @@ mindmap
       TerminalRead
       TerminalInterrupt
       TerminalKill
+    Human
+      AskUser
 ```
 
 ---
@@ -342,7 +376,7 @@ mindmap
 The harness uses a single workspace concept.
 
 - `WORKSPACE_ROOT` defines the default workspace root when you want an environment-level default
-- `run(..., workspace_root=...)` overrides it for that run
+- `run(..., workspace_root=...)` overrides it for that run and creates the directory if it does not exist
 - relative local file paths resolve from the workspace
 - `Bash` and `TerminalStart` start from the workspace by default
 
@@ -465,52 +499,52 @@ RESEARCHHARNESS_TEST_PYTHON="/path/to/your/python"
 ### Tool availability
 
 ```bash
-python3 test/test_tool_availability.py --json
+python3 tests/test_tool_availability.py --json
 ```
 
 ### Local tool validation
 
 ```bash
-python3 test/test_local_tools_validation.py
+python3 tests/test_local_tools_validation.py
 ```
 
 ### Direct toolchain validation
 
 ```bash
-python3 test/test_toolchain_validation.py
+python3 tests/test_toolchain_validation.py
 ```
 
 ### End-to-end multi-tool test
 
 ```bash
-python3 test/test_end_to_end_multitool.py
+python3 tests/test_end_to_end_multitool.py
 ```
 
 ### End-to-end local file discovery test
 
 ```bash
-python3 test/test_end_to_end_glob_grep.py
+python3 tests/test_end_to_end_glob_grep.py
 ```
 
 ### End-to-end write/edit test
 
 ```bash
-python3 test/test_end_to_end_write_edit.py
+python3 tests/test_end_to_end_write_edit.py
 ```
 
 ### End-to-end terminal-session test
 
 ```bash
-python3 test/test_end_to_end_terminal.py
+python3 tests/test_end_to_end_terminal.py
 ```
 
 ### End-to-end online PDF first-figure test
 
 ```bash
-python3 test/test_end_to_end_pdf_image.py
+python3 tests/test_end_to_end_pdf_image.py
 ```
 
-Fixed local fixtures live under [test/example_files/](test/example_files).
+Fixed local fixtures live under [tests/example_files/](tests/example_files).
 
 ---
 
@@ -539,16 +573,16 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 
 ### Tests and fixtures
 
-- [test/test_tool_availability.py](test/test_tool_availability.py)
-- [test/test_local_tools_validation.py](test/test_local_tools_validation.py)
-- [test/test_toolchain_validation.py](test/test_toolchain_validation.py)
-- [test/test_end_to_end_multitool.py](test/test_end_to_end_multitool.py)
-- [test/test_end_to_end_glob_grep.py](test/test_end_to_end_glob_grep.py)
-- [test/test_end_to_end_write_edit.py](test/test_end_to_end_write_edit.py)
-- [test/test_end_to_end_terminal.py](test/test_end_to_end_terminal.py)
-- [test/test_end_to_end_pdf_image.py](test/test_end_to_end_pdf_image.py)
-- [test/example_files/](test/example_files)
-- [test/cases/](test/cases)
+- [tests/test_tool_availability.py](tests/test_tool_availability.py)
+- [tests/test_local_tools_validation.py](tests/test_local_tools_validation.py)
+- [tests/test_toolchain_validation.py](tests/test_toolchain_validation.py)
+- [tests/test_end_to_end_multitool.py](tests/test_end_to_end_multitool.py)
+- [tests/test_end_to_end_glob_grep.py](tests/test_end_to_end_glob_grep.py)
+- [tests/test_end_to_end_write_edit.py](tests/test_end_to_end_write_edit.py)
+- [tests/test_end_to_end_terminal.py](tests/test_end_to_end_terminal.py)
+- [tests/test_end_to_end_pdf_image.py](tests/test_end_to_end_pdf_image.py)
+- [tests/example_files/](tests/example_files)
+- [tests/cases/](tests/cases)
 
 ### Runtime workspace
 
@@ -559,7 +593,7 @@ Fixed local fixtures live under [test/example_files/](test/example_files).
 ## ⚠️ Known Boundaries
 
 - This repository is a harness runtime, not a security product
-- `ReadPDF` depends on `structai` and `MINERU_TOKEN`
+- `ReadPDF` depends on [`structai`](https://github.com/black-yt/structai) and `MINERU_TOKEN`
 - `ReadImage` currently sends compressed local images as inline `data:` URLs through standard `image_url` request parts
 - The runtime currently expects an OpenAI-compatible chat-completions endpoint
 - Real LLM behavior is still the least deterministic part of the system, even with native tool calling and test coverage
