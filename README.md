@@ -32,6 +32,7 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 - [📰 News](#-news)
 - [🧭 Positioning](#-positioning)
 - [⚡ Quick Start](#-quick-start)
+- [🚀 OpenAI-Compatible API Deployment](#-openai-compatible-api-deployment)
 - [🧠 How It Works](#-how-it-works)
 - [🛠 Tool Surface](#-tool-surface)
 - [🗂 Workspace Model](#-workspace-model)
@@ -48,6 +49,8 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 
 - **Native tool calling**
   The harness uses OpenAI-compatible native tool calling instead of a custom text protocol.
+- **OpenAI-compatible API serving**
+  ResearchHarness can be deployed behind `/v1/chat/completions`, so existing OpenAI SDK clients can call it as a tool-using agent backend.
 - **General model support**
   The runtime is built around OpenAI-compatible chat-completions APIs, which makes it straightforward to use GPT, Gemini, Qwen, GLM, and other model families when exposed through that interface.
 - **Fair benchmark substrate**
@@ -71,6 +74,8 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 
 ## 📰 News
 
+- **2026-05-12: OpenAI-compatible API server**
+  ResearchHarness can now be deployed as a synchronous `/v1/chat/completions` service. Existing OpenAI SDK clients can send plain-text or multimodal requests, while the server creates an isolated workspace per request and uses input/output LLM wrappers to keep agent execution stable and final answers format-compliant.
 - **2026-04-30: Interactive `AskUser` tool**
   ResearchHarness now includes an `AskUser` native tool for essential human clarification in interactive runs, while the ResearchClawBench adapter explicitly excludes it to keep benchmark runs non-interactive.
 - **2026-04-30: Workspace roots are created automatically**
@@ -237,9 +242,9 @@ python3 -m agent_base.prompt --list-assets
 python3 -m agent_base.prompt --show-system
 ```
 
-### 3. Run
+### 3. Run From the Command Line
 
-Run the agent directly through the thin top-level entrypoint:
+Run the agent from your terminal through the thin top-level entrypoint:
 
 ```bash
 python3 run_agent.py "Who proposed the transformer architecture, and in what year was the paper published?"
@@ -273,6 +278,93 @@ python3 -m agent_base.react_agent "review this artifact" \
   --workspace-root /path/to/workspace \
   --role-prompt-file /path/to/role_prompt.md
 ```
+
+---
+
+## 🚀 OpenAI-Compatible API Deployment
+
+ResearchHarness can run as a synchronous OpenAI-compatible agent service for
+benchmarks, local applications, automation scripts, and personal assistant
+workflows. Existing clients only need to point the OpenAI SDK `base_url` at the
+ResearchHarness server; behind that familiar interface, RH still runs its full
+tool-using agent loop.
+
+The server exposes:
+
+```http
+POST /v1/chat/completions
+```
+
+Start the server in one terminal. `--workspace-root` is a parent directory used
+only for API runs; each request gets its own isolated subdirectory under it, so
+separate users, scripts, and benchmark cases do not share files.
+
+```bash
+python3 serve_openai.py \
+  --workspace-root /path/to/rh_api_workspaces \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --role-prompt-file benchmarks/QA/role_prompt.md
+```
+
+Use the normal OpenAI SDK from another terminal, application, or benchmark
+runner:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8000/v1")
+
+response = client.chat.completions.create(
+    model="researchharness",
+    messages=[
+        {"role": "user", "content": "Answer the question in one sentence: what is 2 + 2?"}
+    ],
+)
+
+print(response.choices[0].message.content)
+```
+
+Multimodal requests use OpenAI-style content parts. The first API version
+supports `data:image/...;base64,...` image URLs.
+
+```python
+import base64
+from pathlib import Path
+from openai import OpenAI
+
+image_bytes = Path("example.png").read_bytes()
+data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+
+client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8000/v1")
+
+response = client.chat.completions.create(
+    model="researchharness",
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is in the image? Return JSON with key answer."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }
+    ],
+)
+
+print(response.choices[0].message.content)
+```
+
+API execution uses three stages:
+
+- Input wrapper: separates the task from strict output-format instructions.
+- ResearchHarness agent: solves the task with tools and an isolated workspace.
+- Output wrapper: formats the agent result to match the user's requested answer
+  contract.
+
+This keeps the public interface simple for callers while letting ResearchHarness
+handle real tool work internally. It is useful both for strict QA/VQA benchmark
+formats and for ordinary users who want a local agent service that can write
+files, inspect images, run tools, and return one clean final answer.
 
 ---
 
@@ -527,6 +619,12 @@ python3 tests/test_local_tools_validation.py
 python3 tests/test_toolchain_validation.py
 ```
 
+### OpenAI-compatible API checks
+
+```bash
+python3 tests/test_openai_api_checks.py
+```
+
 ### End-to-end multi-tool test
 
 ```bash
@@ -566,6 +664,8 @@ Fixed local fixtures live under [tests/example_files/](tests/example_files).
 ### Core runtime
 
 - [run_agent.py](run_agent.py)
+- [serve_openai.py](serve_openai.py)
+- [api/openai_server.py](api/openai_server.py)
 - [agent_base/react_agent.py](agent_base/react_agent.py)
 - [agent_base/base.py](agent_base/base.py)
 - [agent_base/prompt.py](agent_base/prompt.py)
@@ -589,6 +689,7 @@ Fixed local fixtures live under [tests/example_files/](tests/example_files).
 - [tests/test_tool_availability.py](tests/test_tool_availability.py)
 - [tests/test_local_tools_validation.py](tests/test_local_tools_validation.py)
 - [tests/test_toolchain_validation.py](tests/test_toolchain_validation.py)
+- [tests/test_openai_api_checks.py](tests/test_openai_api_checks.py)
 - [tests/test_end_to_end_multitool.py](tests/test_end_to_end_multitool.py)
 - [tests/test_end_to_end_glob_grep.py](tests/test_end_to_end_glob_grep.py)
 - [tests/test_end_to_end_write_edit.py](tests/test_end_to_end_write_edit.py)

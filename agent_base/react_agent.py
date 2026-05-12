@@ -146,6 +146,31 @@ def assistant_text_content(content: Any) -> str:
     return str(content)
 
 
+def message_trace_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    text_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            text_parts.append(str(part))
+            continue
+        part_type = part.get("type")
+        if part_type == "text":
+            text_parts.append(str(part.get("text", "")))
+        elif part_type == "image_url":
+            image_url = part.get("image_url", {})
+            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+            url_text = str(url)
+            if url_text.startswith("data:image/"):
+                url_text = url_text.split(",", 1)[0] + ",...(base64 omitted)"
+            text_parts.append(f"[image_url: {url_text}]")
+        else:
+            text_parts.append(str(part))
+    return "\n".join(text for text in text_parts if text)
+
+
 def assistant_reasoning_content(message: Any) -> Optional[Any]:
     if hasattr(message, "model_dump"):
         try:
@@ -675,6 +700,7 @@ class MultiTurnReactAgent(BaseAgent):
         prompt: str,
         workspace_root: Optional[str] = None,
         event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        initial_content_parts: Optional[Sequence[dict[str, Any]]] = None,
     ) -> dict:
         """Internal execution path with trace data for tests and debugging."""
         if not isinstance(prompt, str) or not prompt.strip():
@@ -692,6 +718,13 @@ class MultiTurnReactAgent(BaseAgent):
             "Relative local file paths resolve from the workspace root.\n\n"
             f"Prompt:\n{prompt_text}"
         )
+        if initial_content_parts is not None:
+            if not isinstance(initial_content_parts, Sequence) or isinstance(initial_content_parts, (str, bytes)):
+                raise ValueError("initial_content_parts must be a sequence of OpenAI-style content part dicts.")
+            safe_initial_parts = safe_jsonable(list(initial_content_parts))
+            if not isinstance(safe_initial_parts, list) or not all(isinstance(part, dict) for part in safe_initial_parts):
+                raise ValueError("initial_content_parts must contain only dict content parts.")
+            user_content: Any = [{"type": "text", "text": user_content}, *safe_initial_parts]
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
         max_llm_calls = self.max_llm_calls
         max_input_tokens = int(self.llm_generate_cfg.get("max_input_tokens", DEFAULT_MAX_INPUT_TOKENS))
@@ -759,7 +792,7 @@ class MultiTurnReactAgent(BaseAgent):
             }
 
         trace_writer.append(role="system", text=system_prompt, turn_index=0)
-        trace_writer.append(role="user", text=user_content, turn_index=0)
+        trace_writer.append(role="user", text=message_trace_text(user_content), turn_index=0)
         persist_state()
 
         while num_llm_calls_available > 0 and round_index < self.max_rounds:
