@@ -2,6 +2,8 @@
 AGENTS.md
 workspace/*
 !workspace/.gitkeep
+traces/*
+!traces/.gitkeep
 data/
 benchmarks/**/local_*.py
 .idea/

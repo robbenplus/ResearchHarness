@@ -24,6 +24,8 @@ It serves three practical roles:
 
 The goal is not novelty for its own sake. The goal is to provide a small, inspectable agent harness that is easy to run, easy to compare, easy to extend, and easy to trust as infrastructure.
 
+**Tutorials:** [English](docs/tutorial_en.md) | [中文](docs/tutorial_zh.md)
+
 ---
 
 ## 📚 Table of Contents
@@ -31,6 +33,7 @@ The goal is not novelty for its own sake. The goal is to provide a small, inspec
 - [✨ Highlights](#-highlights)
 - [📰 News](#-news)
 - [🧭 Positioning](#-positioning)
+- [📖 Tutorials](#-tutorials)
 - [⚡ Quick Start](#-quick-start)
 - [🚀 OpenAI-Compatible API Deployment](#-openai-compatible-api-deployment)
 - [🧠 How It Works](#-how-it-works)
@@ -139,6 +142,19 @@ If you need stricter security isolation or product-specific orchestration, those
 | Fair benchmark base | It keeps the runtime contract explicit and lightweight, which is useful for benchmarks such as ResearchClawBench. |
 | Baseline and meta harness | It is small enough to inspect and modify, making it a practical reference baseline and an object of optimization itself. |
 | Personal assistant | It already includes file, shell, PDF, image, and report-oriented workflows, so it is useful outside benchmark settings too. |
+
+---
+
+## 📖 Tutorials
+
+Detailed tutorials are available in both English and Chinese:
+
+- [English tutorial](docs/tutorial_en.md)
+- [中文教程](docs/tutorial_zh.md)
+
+They cover installation, environment variables, command-line usage, the
+OpenAI-compatible API server, text and multimodal requests, wrapper switches,
+workspace layout, API request/response contracts, testing, and troubleshooting.
 
 ---
 
@@ -259,23 +275,27 @@ python3 -m agent_base.react_agent "Who proposed the transformer architecture, an
 Save a trace:
 
 ```bash
-python3 -m agent_base.react_agent "your prompt" --trace-dir workspace/manual_runs
+python3 -m agent_base.react_agent "your prompt" --trace-dir ./traces
 ```
 
 When a trace directory is provided, ResearchHarness creates a file named like
 `trace_YYYYMMDD_HHMMSS_<runid>.jsonl` inside that directory.
+You can replace `./traces` with any other trace directory.
+Without `--trace-dir`, CLI runs do not write a trace file.
 
 Use an explicit workspace:
 
 ```bash
-python3 -m agent_base.react_agent "summarize this project" --workspace-root /path/to/workspace
+python3 -m agent_base.react_agent "summarize this project" --workspace-root ./workspace
 ```
+
+You can replace `./workspace` with any other workspace directory.
 
 Run with one extra role-prompt file appended to the base prompt:
 
 ```bash
 python3 -m agent_base.react_agent "review this artifact" \
-  --workspace-root /path/to/workspace \
+  --workspace-root ./workspace \
   --role-prompt-file /path/to/role_prompt.md
 ```
 
@@ -308,6 +328,9 @@ Each request creates:
       inputs/images/    # user-provided images, when present
     records/            # API trace and agent trace files
 ```
+
+In deployment mode, traces are saved by default. Each request writes API wrapper
+records and agent traces into that run's `records/` directory.
 
 Default deployment for normal application or personal-assistant use:
 
@@ -427,6 +450,23 @@ API execution uses three stages:
 - ResearchHarness agent: solves the task with tools and an isolated workspace.
 - Output wrapper: formats the agent result to match the user's requested answer
   contract.
+
+```mermaid
+flowchart LR
+    U[OpenAI SDK Client] --> API["/v1/chat/completions"]
+    API --> IW[Input Wrapper LLM]
+    IW --> A[ResearchHarness Agent]
+    A --> OW[Output Wrapper LLM]
+    OW --> U
+
+    API --> R[records/]
+    A --> W[agent_workspace/]
+    A --> R
+    IW --> R
+    OW --> R
+
+    W --> I[inputs/images/]
+```
 
 This keeps the public interface simple for callers while letting ResearchHarness
 handle real tool work internally. It is useful both for strict QA/VQA benchmark
@@ -552,7 +592,7 @@ The harness uses a single workspace concept.
 - relative local file paths resolve from the workspace
 - `Bash` and `TerminalStart` start from the workspace by default
 
-The repository includes a committed [workspace/.gitkeep](workspace/.gitkeep) so the directory exists in Git, while runtime artifacts inside `workspace/` remain ignored.
+The repository includes committed [workspace/.gitkeep](workspace/.gitkeep) and [traces/.gitkeep](traces/.gitkeep) files so both directories exist in Git, while runtime artifacts inside `workspace/` and `traces/` remain ignored.
 
 ---
 
@@ -743,6 +783,11 @@ Fixed local fixtures live under [tests/example_files/](tests/example_files).
 
 - [benchmarks/README.md](benchmarks/README.md)
 - [benchmarks/](benchmarks)
+
+### Tutorials
+
+- [docs/tutorial_en.md](docs/tutorial_en.md)
+- [docs/tutorial_zh.md](docs/tutorial_zh.md)
 
 ### Tools
 
