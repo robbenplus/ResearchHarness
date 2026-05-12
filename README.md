@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Models](https://img.shields.io/badge/Models-GPT%20%7C%20Gemini%20%7C%20Qwen%20%7C%20GLM-0f766e.svg)](#-highlights)
 [![Upper Layer](https://img.shields.io/badge/Upper%20Layer-MarkScientist-2563eb.svg)](https://github.com/InternScience/MarkScientist)
-[![Runtime](https://img.shields.io/badge/Runtime-Native%20Tool%20Calling-4f46e5.svg)](#-runtime-model)
+[![Runtime](https://img.shields.io/badge/Runtime-Native%20Tool%20Calling-4f46e5.svg)](#-how-it-works)
 [![Trace](https://img.shields.io/badge/Trace-Flat%20JSONL-0f766e.svg)](#-traces-and-compaction)
 [![Benchmark](https://img.shields.io/badge/Benchmark-ResearchClawBench-f59e0b.svg)](https://github.com/InternScience/ResearchClawBench)
 
@@ -38,12 +38,12 @@ and easy to trust as infrastructure.
 - [📰 News](#-news)
 - [🧭 Positioning](#-positioning)
 - [📦 Installation and Configuration](#-installation-and-configuration)
+- [🏗 Project Structure](#-project-structure)
 - [🖥 CLI Usage](#-cli-usage)
 - [🚀 OpenAI-Compatible API Deployment](#-openai-compatible-api-deployment)
-- [🧠 Runtime Model](#-runtime-model)
+- [🧠 How It Works](#-how-it-works)
 - [🛠 Tool Surface](#-tool-surface)
 - [🧪 Testing](#-testing)
-- [🏗 Project Structure](#-project-structure)
 - [⚠️ Known Boundaries](#️-known-boundaries)
 - [🪪 License](#-license)
 
@@ -263,6 +263,52 @@ Inspect the base prompt assets:
 python3 -m agent_base.prompt --list-assets
 python3 -m agent_base.prompt --show-system
 ```
+
+---
+
+## 🏗 Project Structure
+
+Start here if you are reading the codebase for the first time.
+
+### Core runtime
+
+- [run_agent.py](run_agent.py): thin command-line entrypoint for direct agent runs
+- [serve_openai.py](serve_openai.py): OpenAI-compatible API server entrypoint
+- [api/openai_server.py](api/openai_server.py): `/v1/chat/completions` request handling, wrappers, and per-request run directories
+- [agent_base/react_agent.py](agent_base/react_agent.py): main ReAct loop, model calls, tool-call handling, trace/session state integration
+- [agent_base/base.py](agent_base/base.py): base agent hooks for extension and benchmark adapters
+- [agent_base/prompt.py](agent_base/prompt.py): base system prompt composition
+- [agent_base/trace_utils.py](agent_base/trace_utils.py): flat JSONL trace writer
+- [agent_base/console_utils.py](agent_base/console_utils.py): readable CLI event printing
+
+### Tools
+
+- [agent_base/tools/tool_file.py](agent_base/tools/tool_file.py): file, PDF, and image tools
+- [agent_base/tools/tool_runtime.py](agent_base/tools/tool_runtime.py): Bash and persistent terminal tools
+- [agent_base/tools/tool_web.py](agent_base/tools/tool_web.py): web search, scholar search, and webpage fetching
+- [agent_base/tools/README.md](agent_base/tools/README.md): detailed tool documentation
+
+### Benchmark and API Adapters
+
+- [benchmarks/README.md](benchmarks/README.md): benchmark adapter overview
+- [benchmarks/](benchmarks): benchmark-specific role prompts and adapters
+- [benchmarks/QA/README.md](benchmarks/QA/README.md): QA/VQA OpenAI-compatible API usage
+
+### Docs and Tests
+
+- [docs/tutorial_en.md](docs/tutorial_en.md): detailed English tutorial
+- [docs/tutorial_zh.md](docs/tutorial_zh.md): detailed Chinese tutorial
+- [tests/](tests): tool checks and end-to-end agent tests
+- [tests/example_files/](tests/example_files): fixed local fixtures
+
+### Runtime Roots
+
+- [workspace/](workspace): default local CLI workspace root
+- [api_runs/](api_runs): default API deployment run root
+- [traces/](traces): default CLI trace output root
+
+Only the `.gitkeep` files in these runtime roots are tracked. Generated files
+inside them are ignored.
 
 ---
 
@@ -506,7 +552,7 @@ files, inspect images, run tools, and return one clean final answer.
 
 ---
 
-## 🧠 Runtime Model
+## 🧠 How It Works
 
 ResearchHarness follows a deliberately simple harness loop so that execution
 stays readable and benchmark behavior stays comparable:
@@ -537,7 +583,7 @@ Properties:
 Model config, retry policy, trace directory, and runtime controls are
 initialization-time settings, not `run(...)` arguments.
 
-### Workspace Model
+### Workspace Basics
 
 The harness uses a single workspace concept in direct agent runs.
 
@@ -551,9 +597,13 @@ The repository includes committed [workspace/.gitkeep](workspace/.gitkeep),
 files so these runtime roots exist in Git, while artifacts inside them remain
 ignored.
 
-### Traces and Compaction
+### Execution Records and Long Runs
 
-Traces are written as a flat JSONL event stream.
+A trace is the chronological record of what happened during a run. It is useful
+when you need to debug behavior, compare benchmark runs, replay a trajectory, or
+collect data for later analysis.
+
+ResearchHarness writes traces as a flat JSONL event stream.
 
 Every row uses the same keys:
 
@@ -625,7 +675,7 @@ llm = {
 }
 ```
 
-### PDF and Image Flow
+### PDF and Image Handling
 
 `ReadPDF` is designed for PDF structure and extracted content. It returns:
 
@@ -730,59 +780,6 @@ RESEARCHHARNESS_TEST_PYTHON="/path/to/your/python"
 | End-to-end online PDF first-figure test | `python3 tests/test_end_to_end_pdf_image.py` |
 
 Fixed local fixtures live under [tests/example_files/](tests/example_files).
-
----
-
-## 🏗 Project Structure
-
-### Core runtime
-
-- [run_agent.py](run_agent.py)
-- [serve_openai.py](serve_openai.py)
-- [api/openai_server.py](api/openai_server.py)
-- [agent_base/react_agent.py](agent_base/react_agent.py)
-- [agent_base/base.py](agent_base/base.py)
-- [agent_base/prompt.py](agent_base/prompt.py)
-- [agent_base/trace_utils.py](agent_base/trace_utils.py)
-- [agent_base/console_utils.py](agent_base/console_utils.py)
-
-### Tools
-
-- [agent_base/tools/tool_file.py](agent_base/tools/tool_file.py)
-- [agent_base/tools/tool_runtime.py](agent_base/tools/tool_runtime.py)
-- [agent_base/tools/tool_web.py](agent_base/tools/tool_web.py)
-- [agent_base/tools/README.md](agent_base/tools/README.md)
-
-### Benchmark integration
-
-- [benchmarks/README.md](benchmarks/README.md)
-- [benchmarks/](benchmarks)
-- [benchmarks/QA/README.md](benchmarks/QA/README.md)
-
-### Tutorials
-
-- [docs/tutorial_en.md](docs/tutorial_en.md)
-- [docs/tutorial_zh.md](docs/tutorial_zh.md)
-
-### Tests and fixtures
-
-- [tests/test_tool_availability.py](tests/test_tool_availability.py)
-- [tests/test_local_tools_validation.py](tests/test_local_tools_validation.py)
-- [tests/test_toolchain_validation.py](tests/test_toolchain_validation.py)
-- [tests/test_openai_api_checks.py](tests/test_openai_api_checks.py)
-- [tests/test_end_to_end_multitool.py](tests/test_end_to_end_multitool.py)
-- [tests/test_end_to_end_glob_grep.py](tests/test_end_to_end_glob_grep.py)
-- [tests/test_end_to_end_write_edit.py](tests/test_end_to_end_write_edit.py)
-- [tests/test_end_to_end_terminal.py](tests/test_end_to_end_terminal.py)
-- [tests/test_end_to_end_pdf_image.py](tests/test_end_to_end_pdf_image.py)
-- [tests/example_files/](tests/example_files)
-- [tests/cases/](tests/cases)
-
-### Runtime roots
-
-- [workspace/](workspace)
-- [api_runs/](api_runs)
-- [traces/](traces)
 
 ---
 
