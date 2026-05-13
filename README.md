@@ -30,6 +30,12 @@ and easy to trust as infrastructure.
 
 **Tutorials:** [English](docs/tutorial_en.md) | [中文](docs/tutorial_zh.md)
 
+## 🎞️ Demo
+
+* **Task**: `Help me research the latest work in auto research and create a visually appealing HTML document to introduce this work. Create an index.html file.`
+
+https://github.com/user-attachments/assets/2a5de733-732d-4fa8-8815-ae42d4a780ef
+
 ---
 
 ## 📚 Table of Contents
