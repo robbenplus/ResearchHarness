@@ -18,6 +18,17 @@ jobs:
     name: Offline checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Edge-case checks are offline/mock/runtime-contract tests. These dummy values
+    # only satisfy startup env validation; real external API/tool checks use
+    # GitHub Secrets in the main-agent-api and workflow_dispatch jobs.
+    env:
+      API_KEY: ci-dummy
+      API_BASE: http://127.0.0.1:9/v1
+      MODEL_NAME: gpt-5.5
+      SERPER_KEY: ci-dummy
+      JINA_KEY: ci-dummy
+      MINERU_TOKEN: ci-dummy
+      PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
       - name: Checkout
@@ -35,8 +46,6 @@ jobs:
         run: python -m compileall agent_base api frontend run_agent.py run_frontend.py run_server.py
 
       - name: Run edge-case checks
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
         run: python tests/test_edge_case_checks.py
 
   main-agent-api:
