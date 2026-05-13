@@ -1644,12 +1644,35 @@ def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, s
     gpt_agent._llm_api_base = "http://fake"
     gpt_reply = gpt_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
 
+    gpt55_agent = MultiTurnReactAgent(
+        function_list=[],
+        llm={
+            "model": "openai/gpt-5.5-20260501",
+            "api_base": "http://fake",
+            "api_key": "fake",
+            "generate_cfg": {
+                "max_input_tokens": 10000,
+                "max_output_tokens": 100,
+                "max_retries": 1,
+                "temperature": 0.2,
+                "top_p": 0.7,
+                "presence_penalty": 0.0,
+            },
+        },
+    )
+    gpt55_client = FakeClient()
+    gpt55_agent._llm_client = gpt55_client
+    gpt55_agent._llm_api_base = "http://fake"
+    gpt55_reply = gpt55_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
+
     detail = json.dumps(
         {
             "claude_request_kwargs": claude_client.request_kwargs,
             "claude_reply": claude_reply,
             "gpt_request_kwargs": gpt_client.request_kwargs,
             "gpt_reply": gpt_reply,
+            "gpt55_request_kwargs": gpt55_client.request_kwargs,
+            "gpt55_reply": gpt55_reply,
         },
         ensure_ascii=False,
         indent=2,
@@ -1663,6 +1686,10 @@ def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, s
         and gpt_client.request_kwargs.get("temperature") == 0.2
         and gpt_client.request_kwargs.get("top_p") == 0.7
         and gpt_client.request_kwargs.get("presence_penalty") == 0.0
+        and isinstance(gpt55_client.request_kwargs, dict)
+        and gpt55_client.request_kwargs.get("temperature") == 0.2
+        and gpt55_client.request_kwargs.get("top_p") == 0.7
+        and "presence_penalty" not in gpt55_client.request_kwargs
     )
     return ok, detail
 
@@ -1703,12 +1730,23 @@ def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool
     gpt_fetch._summary_presence_penalty = 0.2
     gpt_result = gpt_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
 
+    gpt55_fetch = WebFetch()
+    gpt55_fetch._summary_client = FakeClient()
+    gpt55_fetch._summary_api_base = "http://fake"
+    gpt55_fetch._summary_model_name = "openai/gpt-5.5-20260501"
+    gpt55_fetch._summary_temperature = 0.3
+    gpt55_fetch._summary_top_p = 0.8
+    gpt55_fetch._summary_presence_penalty = 0.2
+    gpt55_result = gpt55_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
+
     detail = json.dumps(
         {
             "claude_request_kwargs": claude_fetch._summary_client.request_kwargs,
             "claude_result": claude_result,
             "gpt_request_kwargs": gpt_fetch._summary_client.request_kwargs,
             "gpt_result": gpt_result,
+            "gpt55_request_kwargs": gpt55_fetch._summary_client.request_kwargs,
+            "gpt55_result": gpt55_result,
         },
         ensure_ascii=False,
         indent=2,
@@ -1722,6 +1760,10 @@ def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool
         and gpt_fetch._summary_client.request_kwargs.get("temperature") == 0.3
         and gpt_fetch._summary_client.request_kwargs.get("top_p") == 0.8
         and gpt_fetch._summary_client.request_kwargs.get("presence_penalty") == 0.2
+        and isinstance(gpt55_fetch._summary_client.request_kwargs, dict)
+        and gpt55_fetch._summary_client.request_kwargs.get("temperature") == 0.3
+        and gpt55_fetch._summary_client.request_kwargs.get("top_p") == 0.8
+        and "presence_penalty" not in gpt55_fetch._summary_client.request_kwargs
     )
     return ok, detail
 

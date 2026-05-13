@@ -30,8 +30,8 @@ python3 -m pip install -r requirements.txt
 | `API_KEY` | OpenAI-compatible LLM 服务的 API key。 |
 | `API_BASE` | OpenAI-compatible chat-completions endpoint 的 base URL。 |
 | `MODEL_NAME` | ResearchHarness 使用的主模型。 |
-| `SERPER_KEY_ID` | `WebSearch` 和 `ScholarSearch` 使用的 Serper key：https://serper.dev/ |
-| `JINA_API_KEYS` | `WebFetch` 使用的 Jina key：https://jina.ai/ |
+| `SERPER_KEY` | `WebSearch` 和 `ScholarSearch` 使用的 Serper key：https://serper.dev/ |
+| `JINA_KEY` | `WebFetch` 使用的 Jina key：https://jina.ai/ |
 | `MINERU_TOKEN` | `ReadPDF` 使用的 MinerU token：https://mineru.net/ |
 
 可选变量：

@@ -16,8 +16,8 @@ REQUIRED_ENV_VARS = (
     "API_KEY",
     "API_BASE",
     "MODEL_NAME",
-    "SERPER_KEY_ID",
-    "JINA_API_KEYS",
+    "SERPER_KEY",
+    "JINA_KEY",
     "MINERU_TOKEN",
 )
 IMAGE_INPUT_REL_DIR = Path("inputs") / "images"

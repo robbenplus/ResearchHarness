@@ -253,7 +253,7 @@ used when they are exposed through a compatible endpoint.
 > **🚨 Required setup before running ResearchHarness**
 >
 > Fill in all required environment variables before starting the agent:
-> `API_KEY`, `API_BASE`, `MODEL_NAME`, `SERPER_KEY_ID`, `JINA_API_KEYS`, and `MINERU_TOKEN`.
+> `API_KEY`, `API_BASE`, `MODEL_NAME`, `SERPER_KEY`, `JINA_KEY`, and `MINERU_TOKEN`.
 >
 > Service key sources:
 > - LLM provider key and endpoint: your OpenAI-compatible provider.
@@ -275,8 +275,8 @@ Required variables:
 - `API_KEY`
 - `API_BASE`
 - `MODEL_NAME`
-- `SERPER_KEY_ID`
-- `JINA_API_KEYS`
+- `SERPER_KEY`
+- `JINA_KEY`
 - `MINERU_TOKEN`
 
 Optional variables:
@@ -308,8 +308,8 @@ Minimal example:
 API_KEY="your_api_key"
 API_BASE="https://your-openai-compatible-endpoint/v1"
 MODEL_NAME="gpt-5.4"
-SERPER_KEY_ID="your_serper_key"
-JINA_API_KEYS="your_jina_key"
+SERPER_KEY="your_serper_key"
+JINA_KEY="your_jina_key"
 MINERU_TOKEN="your_mineru_token"
 ```
 

@@ -290,7 +290,7 @@ Arguments:
 Behavior:
 
 - Calls Serper's Google Search endpoint.
-- Reads `SERPER_KEY_ID` at runtime.
+- Reads `SERPER_KEY` at runtime.
 
 Returns:
 
@@ -312,7 +312,7 @@ Arguments:
 Behavior:
 
 - Calls Serper's Google Scholar endpoint.
-- Reads `SERPER_KEY_ID` at runtime.
+- Reads `SERPER_KEY` at runtime.
 
 Returns:
 
@@ -341,7 +341,7 @@ Behavior:
 
 Dependencies:
 
-- `JINA_API_KEYS`
+- `JINA_KEY`
 - `API_KEY`
 - `API_BASE`
 - `MODEL_NAME`

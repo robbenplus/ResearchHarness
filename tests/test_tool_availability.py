@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import re
+import shutil
 import sys
 import time
 import traceback
@@ -373,7 +374,49 @@ def test_terminal_toolchain() -> ToolTestResult:
     return make_result("TerminalToolchain", "PASS", started_at, "Terminal toolchain executed successfully.", combined, stdout, stderr)
 
 
+def test_main_agent_api() -> ToolTestResult:
+    started_at = time.time()
+    from agent_base.react_agent import MultiTurnReactAgent, default_llm_config
+
+    workdir = TEST_RUNS_DIR / "tool_availability_check" / "main_agent_api"
+    trace_dir = workdir / "trace"
+    shutil.rmtree(workdir, ignore_errors=True)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    llm_config = default_llm_config()
+    generate_cfg = dict(llm_config.get("generate_cfg") or {})
+    generate_cfg["max_output_tokens"] = 32
+    generate_cfg["max_retries"] = 2
+    llm_config["generate_cfg"] = generate_cfg
+
+    agent = MultiTurnReactAgent(
+        function_list=[],
+        llm=llm_config,
+        trace_dir=str(trace_dir),
+        max_rounds=2,
+        max_runtime_seconds=180,
+    )
+    result, stdout, stderr = call_with_capture(
+        agent.run,
+        "Reply with exactly the lowercase token main-agent-ok and no other text.",
+        workspace_root=str(workdir),
+    )
+    text = str(result).strip()
+    if "main-agent-ok" not in text.lower():
+        return make_result(
+            "MainAgentAPI",
+            "FAIL",
+            started_at,
+            "Main agent real API call did not return the expected marker.",
+            text,
+            stdout,
+            stderr,
+        )
+    return make_result("MainAgentAPI", "PASS", started_at, "Main agent real API call completed successfully.", text, stdout, stderr)
+
+
 TESTS: dict[str, Callable[[], ToolTestResult]] = {
+    "MainAgentAPI": test_main_agent_api,
     "WebSearch": test_search,
     "ScholarSearch": test_google_scholar,
     "WebFetch": test_visit,

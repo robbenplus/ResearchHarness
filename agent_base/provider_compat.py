@@ -13,6 +13,14 @@ def model_rejects_sampling_params(model_name: str) -> bool:
     return any(part.startswith("claude") for part in parts)
 
 
+def model_rejects_presence_penalty(model_name: str) -> bool:
+    normalized = str(model_name or "").strip().casefold()
+    if not normalized:
+        return False
+    parts = [part for part in _MODEL_NAME_SPLIT_RE.split(normalized) if part]
+    return any(part.startswith("gpt-5.5") for part in parts)
+
+
 def apply_sampling_params(
     request_kwargs: dict[str, Any],
     *,
@@ -27,5 +35,5 @@ def apply_sampling_params(
         request_kwargs["temperature"] = temperature
     if top_p is not None:
         request_kwargs["top_p"] = top_p
-    if presence_penalty is not None:
+    if presence_penalty is not None and not model_rejects_presence_penalty(model_name):
         request_kwargs["presence_penalty"] = presence_penalty

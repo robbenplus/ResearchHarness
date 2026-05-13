@@ -32,8 +32,8 @@ Required variables:
 | `API_KEY` | API key for your OpenAI-compatible LLM provider. |
 | `API_BASE` | Base URL for the OpenAI-compatible chat-completions endpoint. |
 | `MODEL_NAME` | Main model used by ResearchHarness. |
-| `SERPER_KEY_ID` | Serper key for `WebSearch` and `ScholarSearch`: https://serper.dev/ |
-| `JINA_API_KEYS` | Jina key for `WebFetch`: https://jina.ai/ |
+| `SERPER_KEY` | Serper key for `WebSearch` and `ScholarSearch`: https://serper.dev/ |
+| `JINA_KEY` | Jina key for `WebFetch`: https://jina.ai/ |
 | `MINERU_TOKEN` | MinerU token for `ReadPDF`: https://mineru.net/ |
 
 Optional variables:

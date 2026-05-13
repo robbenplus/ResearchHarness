@@ -130,9 +130,9 @@ class WebSearch(ToolBase):
                 "gl": "us",
                 "hl": "en",
             }
-        serper_key = os.getenv("SERPER_KEY_ID", "").strip()
+        serper_key = os.getenv("SERPER_KEY", "").strip()
         if not serper_key:
-            return "[WebSearch] SERPER_KEY_ID is not set."
+            return "[WebSearch] SERPER_KEY is not set."
         headers = {
             "X-API-KEY": serper_key,
             "Content-Type": "application/json",
@@ -229,9 +229,9 @@ class ScholarSearch(ToolBase):
 
     def google_scholar_with_serp(self, query: str):
         payload = {"q": query}
-        serper_key = os.getenv("SERPER_KEY_ID", "").strip()
+        serper_key = os.getenv("SERPER_KEY", "").strip()
         if not serper_key:
-            return "[ScholarSearch] SERPER_KEY_ID is not set."
+            return "[ScholarSearch] SERPER_KEY is not set."
         headers = {
             "X-API-KEY": serper_key,
             "Content-Type": "application/json",
@@ -449,9 +449,9 @@ class WebFetch(ToolBase):
     def jina_readpage(self, url: str, runtime_deadline: Optional[float] = None) -> str:
         max_retries = 3
         timeout = 50
-        jina_api_key = os.getenv("JINA_API_KEYS", "").strip()
+        jina_api_key = os.getenv("JINA_KEY", "").strip()
         if not jina_api_key:
-            return "[WebFetch] JINA_API_KEYS is not set."
+            return "[WebFetch] JINA_KEY is not set."
 
         last_error = "unknown page-fetch error"
         for attempt in range(max_retries):
