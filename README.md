@@ -29,9 +29,9 @@ The goal is not novelty for its own sake. The goal is to provide a small,
 inspectable agent harness that is easy to run, easy to compare, easy to extend,
 and easy to trust as infrastructure.
 
-**Tutorials:** [English](docs/tutorial_en.md) | [中文](docs/tutorial_zh.md)
+📚 **Tutorials:** [English](docs/tutorial_en.md) | [中文](docs/tutorial_zh.md)
 
-**Try it online:** [ResearchHarness Online Chat](https://huggingface.co/spaces/CoCoOne/ResearchHarness)
+🚀 **Try it online now:** [ResearchHarness Online Chat](https://huggingface.co/spaces/CoCoOne/ResearchHarness)
 
 ## 🎞️ Demo
 
