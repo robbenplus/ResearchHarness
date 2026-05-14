@@ -175,7 +175,7 @@ def test_frontend_static_interaction_contract() -> None:
     assert "askForm" not in js
     assert "askAnswer" not in js
     assert "askPanel" not in html
-    assert "https://github.com/black-yt/ResearchHarness" in html
+    assert "https://github.com/InternScience/ResearchHarness" in html
     assert "https://black-yt.github.io/" in html
     assert 'class="space-links"' in html
     assert "marked@15.0.12/marked.min.js" in html
