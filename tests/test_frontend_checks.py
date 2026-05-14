@@ -175,6 +175,9 @@ def test_frontend_static_interaction_contract() -> None:
     assert "askForm" not in js
     assert "askAnswer" not in js
     assert "askPanel" not in html
+    assert "https://github.com/black-yt/ResearchHarness" in html
+    assert "https://black-yt.github.io/" in html
+    assert 'class="space-links"' in html
     assert "marked@15.0.12/marked.min.js" in html
     assert "dompurify@3.2.6/dist/purify.min.js" in html
     assert 'eventNode.classList.add("collapsed")' not in js
@@ -202,6 +205,8 @@ def test_frontend_static_interaction_contract() -> None:
     assert ".markdown-body table" in css
     assert ".event.can-collapse" in css
     assert ".event:not(.can-collapse) .event-toggle" in css
+    assert ".space-links" in css
+    assert ".sr-only" in css
     assert "ask-card" not in css
     assert ".event-body {\n  display: grid" not in css
     assert ".event.collapsed .event-body {\n  grid-template-rows" not in css

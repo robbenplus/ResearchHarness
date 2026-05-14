@@ -1005,6 +1005,52 @@ button:disabled {
   transform: scale(1.08);
 }
 
+.space-links {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 20;
+  display: flex;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bar);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
+}
+
+.space-links a {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: var(--text);
+  text-decoration: none;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.space-links a:hover {
+  background: rgba(var(--glow-rgb), 0.12);
+  color: var(--accent-start);
+  transform: translateY(-1px);
+}
+
+.space-links svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1056,6 +1102,11 @@ button:disabled {
 
   #theme-switcher {
     right: 12px;
+    bottom: 12px;
+  }
+
+  .space-links {
+    left: 12px;
     bottom: 12px;
   }
 }
