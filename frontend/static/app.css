@@ -136,10 +136,6 @@ button {
   box-shadow: var(--surface-shadow);
 }
 
-.topbar:has(.model-dropdown.open) {
-  z-index: 20;
-}
-
 .brand {
   display: flex;
   align-items: center;
@@ -249,10 +245,10 @@ button {
 }
 
 .model-options {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  top: var(--model-options-top, 64px);
+  right: var(--model-options-right, 16px);
+  z-index: 80;
   display: grid;
   gap: 4px;
   min-width: 220px;
@@ -268,7 +264,7 @@ button {
   transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
-.model-dropdown.open .model-options {
+.model-options.open {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0) scale(1);

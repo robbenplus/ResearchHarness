@@ -236,7 +236,15 @@
   function closeModelDropdown() {
     if (!modelDropdown || !modelDropdownButton) return;
     modelDropdown.classList.remove("open");
+    if (modelOptions) modelOptions.classList.remove("open");
     modelDropdownButton.setAttribute("aria-expanded", "false");
+  }
+
+  function positionModelOptions() {
+    if (!modelDropdownButton || !modelOptions) return;
+    var rect = modelDropdownButton.getBoundingClientRect();
+    modelOptions.style.setProperty("--model-options-top", Math.round(rect.bottom + 8) + "px");
+    modelOptions.style.setProperty("--model-options-right", Math.max(12, Math.round(window.innerWidth - rect.right)) + "px");
   }
 
   function setModelValue(value) {
@@ -259,11 +267,14 @@
 
   function setupModelDropdown() {
     if (!modelDropdown || !modelDropdownButton || !modelOptions || !modelSelect) return;
+    if (modelOptions.parentElement !== document.body) document.body.appendChild(modelOptions);
     setModelValue(modelSelect.value || "gpt-5.5");
     modelDropdownButton.addEventListener("click", function () {
       if (modelDropdownButton.disabled) return;
       var shouldOpen = !modelDropdown.classList.contains("open");
+      if (shouldOpen) positionModelOptions();
       modelDropdown.classList.toggle("open", shouldOpen);
+      modelOptions.classList.toggle("open", shouldOpen);
       modelDropdownButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
     });
     modelOptions.querySelectorAll(".model-option").forEach(function (option) {
@@ -273,10 +284,13 @@
       });
     });
     document.addEventListener("click", function (event) {
-      if (!modelDropdown.contains(event.target)) closeModelDropdown();
+      if (!modelDropdown.contains(event.target) && !modelOptions.contains(event.target)) closeModelDropdown();
     });
     document.addEventListener("keydown", function (event) {
       if (event.key === "Escape") closeModelDropdown();
+    });
+    window.addEventListener("resize", function () {
+      if (modelDropdown.classList.contains("open")) positionModelOptions();
     });
   }
 

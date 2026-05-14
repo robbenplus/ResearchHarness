@@ -149,6 +149,8 @@ def test_frontend_static_interaction_contract() -> None:
     assert "continue_conversation" in js
     assert "modelSelect" in js
     assert "setupModelDropdown" in js
+    assert "positionModelOptions" in js
+    assert "document.body.appendChild(modelOptions)" in js
     assert "model_name: modelSelect ? modelSelect.value : \"\"" in js
     assert "setEventExpanded" in js
     assert "refreshEventCollapseCapability" in js
@@ -184,7 +186,9 @@ def test_frontend_static_interaction_contract() -> None:
     assert "position: sticky" in css
     assert "top: 66px" in css
     assert "z-index: 4" in css
-    assert ".topbar:has(.model-dropdown.open)" in css
+    assert "z-index: 80" in css
+    assert ".model-options.open" in css
+    assert ".topbar:has(.model-dropdown.open)" not in css
     assert "height: 100dvh" in css
     assert ".chat-shell > *" in css
     assert "overflow-wrap: anywhere" in css
