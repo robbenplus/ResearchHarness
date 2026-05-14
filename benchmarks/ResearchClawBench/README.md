@@ -43,7 +43,7 @@ entrypoint.
 - The command should stay one-line and non-interactive.
 - Optional extra tools can be added directly to the same command. For example,
   add `--extra-tool str_replace_editor` if the benchmark configuration should
-  expose the Anthropic-style text editing compatibility tool. `--extra-tool` may
+  expose the text editing compatibility tool. `--extra-tool` may
   be passed multiple times when more optional tools exist.
 - By default, no ResearchHarness trace is saved. If you want to save traces
   during evaluation, create a separate trace directory and add

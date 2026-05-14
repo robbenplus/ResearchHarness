@@ -57,7 +57,7 @@ Optional extra tools are not loaded by default. Enable them explicitly with `--e
 | `TerminalRead` | Runtime | `session_id`, `yield_time_ms?`, `max_output_chars?` | Read unread output from an existing persistent terminal session. | Useful when a process is still running and output arrives over time. |
 | `TerminalInterrupt` | Runtime | `session_id`, `max_output_chars?` | Send `Ctrl-C` to the foreground process in a terminal session without destroying the session. | Use when a long-running process must be interrupted but the shell should remain alive. |
 | `TerminalKill` | Runtime | `session_id`, `force?` | Terminate a persistent terminal session and release resources. | Final cleanup step for terminal sessions that are no longer needed. |
-| `str_replace_editor` | Optional compatibility | `command`, `path`, `file_text?`, `old_str?`, `new_str?`, `insert_line?`, `view_range?` | Anthropic-style plain-text editor compatibility tool. | Not loaded by default. Enable with `--extra-tool str_replace_editor`. Requires absolute paths inside the workspace. |
+| `str_replace_editor` | Optional compatibility | `command`, `path`, `file_text?`, `old_str?`, `new_str?`, `insert_line?`, `view_range?` | Text editing compatibility tool. | Not loaded by default. Enable with `--extra-tool str_replace_editor`. Requires absolute paths inside the workspace. |
 
 ## Glob
 
