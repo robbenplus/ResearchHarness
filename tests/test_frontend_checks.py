@@ -116,6 +116,9 @@ def test_frontend_static_interaction_contract() -> None:
     assert "Click + to add one or more images" in html
     assert '/static/favicon.svg?v=rocket-1' in html
     assert 'placeholder="Message ResearchHarness"' in html
+    assert 'id="modelSelect"' in html
+    assert 'value="gpt-5.5"' in html
+    assert 'value="claude-opus-4-7"' in html
     assert "Message ResearchHarness... Enter sends" not in html
     assert 'id="workspaceStrip"' in html
     assert 'id="workspaceInput" type="hidden"' in html
@@ -126,6 +129,7 @@ def test_frontend_static_interaction_contract() -> None:
     assert "configure_frontend" in launcher
     assert "role_prompt=FRONTEND_ROLE_PROMPT or None" in server
     assert "trace_dir=FRONTEND_TRACE_DIR" in server
+    assert "default_llm_config(model_name=model_name or None)" in server
     assert "prior_messages=prior_messages" in server
     assert "conversation_messages" in server
     assert "No active conversation is available on the server" in server
@@ -142,6 +146,8 @@ def test_frontend_static_interaction_contract() -> None:
     assert "Finished: " not in js
     assert "conversationStarted" in js
     assert "continue_conversation" in js
+    assert "modelSelect" in js
+    assert "model_name: modelSelect ? modelSelect.value : \"\"" in js
     assert "setEventExpanded" in js
     assert "refreshEventCollapseCapability" in js
     assert "can-collapse" in js

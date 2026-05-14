@@ -20,6 +20,7 @@ from agent_base.react_agent import (
     MultiTurnReactAgent,
     assistant_text_content,
     default_llm_config,
+    default_model_name,
     model_supports_runtime_image_parts,
 )
 from agent_base.tools.tooling import normalize_workspace_root
@@ -35,6 +36,8 @@ IMAGE_EXTENSIONS = {
     "image/gif": ".gif",
 }
 DEFAULT_MAX_IMAGE_BYTES = 25 * 1024 * 1024
+API_MODEL_ALIAS = "RH"
+API_MODEL_PREFIX = "RH--"
 
 INPUT_WRAPPER_SYSTEM_PROMPT = """You are the ResearchHarness input wrapper.
 
@@ -135,13 +138,26 @@ def validate_chat_payload(payload: Any) -> dict[str, Any]:
         raise OpenAICompatError(400, "n must be an integer.") from exc
     if n_value != 1:
         raise OpenAICompatError(400, "Only n=1 is supported.")
-    model = str(payload.get("model", "")).strip()
-    if not model:
-        raise OpenAICompatError(400, "model is required.")
+    model = str(payload.get("model", API_MODEL_ALIAS) or API_MODEL_ALIAS).strip() or API_MODEL_ALIAS
+    payload["model"] = model
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         raise OpenAICompatError(400, "messages must be a non-empty list.")
     return payload
+
+
+def resolve_api_model_selection(model_label: str) -> tuple[str, str]:
+    label = str(model_label or API_MODEL_ALIAS).strip() or API_MODEL_ALIAS
+    if label == API_MODEL_ALIAS or label.casefold() == "researchharness":
+        return API_MODEL_ALIAS, default_model_name()
+    if label.startswith(API_MODEL_PREFIX):
+        backend_model = label[len(API_MODEL_PREFIX) :].strip()
+        if backend_model:
+            return label, backend_model
+    raise OpenAICompatError(
+        400,
+        "model must be 'RH' for the default backend model or 'RH--<llm-model-name>' for a per-request override.",
+    )
 
 
 def prepare_openai_input(messages: list[Any], workspace_root: Path) -> PreparedInput:
@@ -367,6 +383,8 @@ def append_api_event(trace_dir: Path, event: str, payload: dict[str, Any]) -> No
 
 def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[str, Any]:
     payload = validate_chat_payload(payload)
+    requested_model_label, backend_model = resolve_api_model_selection(str(payload.get("model") or API_MODEL_ALIAS))
+    payload["model"] = requested_model_label
     request_id = "chatcmpl_" + uuid4().hex
     run_id = "run_" + datetime.datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8]
     run_root = config.api_runs_dir / run_id
@@ -375,8 +393,16 @@ def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[s
     agent_workspace.mkdir(parents=True, exist_ok=False)
     trace_dir.mkdir(parents=True, exist_ok=False)
     prepared = prepare_openai_input(payload["messages"], agent_workspace)
-    llm_config = default_llm_config()
+    llm_config = default_llm_config(model_name=backend_model)
     backend_model = str(llm_config.get("model", ""))
+    append_api_event(
+        trace_dir,
+        "model_selection",
+        {
+            "requested_model_label": requested_model_label,
+            "backend_model": backend_model,
+        },
+    )
     if prepared.initial_content_parts and not model_supports_runtime_image_parts(backend_model):
         raise OpenAICompatError(
             400,
@@ -400,6 +426,8 @@ def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[s
             "input_wrapper",
             {
                 "enabled": True,
+                "requested_model_label": requested_model_label,
+                "backend_model": backend_model,
                 "request": input_wrapper_messages,
                 "response_text": input_wrapper_text,
                 "input_plan": input_plan,
@@ -412,6 +440,8 @@ def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[s
             "input_wrapper",
             {
                 "enabled": False,
+                "requested_model_label": requested_model_label,
+                "backend_model": backend_model,
                 "input_plan": input_plan,
             },
         )
@@ -446,6 +476,8 @@ def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[s
             "output_wrapper",
             {
                 "enabled": True,
+                "requested_model_label": requested_model_label,
+                "backend_model": backend_model,
                 "request": output_wrapper_messages,
                 "response_text": final_text,
             },
@@ -457,12 +489,14 @@ def run_chat_completion(payload: dict[str, Any], config: ServerConfig) -> dict[s
             "output_wrapper",
             {
                 "enabled": False,
+                "requested_model_label": requested_model_label,
+                "backend_model": backend_model,
                 "response_text": final_text,
             },
         )
     return make_chat_completion_response(
         request_id=request_id,
-        model=str(payload.get("model", "researchharness")),
+        model=requested_model_label,
         content=final_text,
     )
 

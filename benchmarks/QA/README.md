@@ -56,7 +56,7 @@ from openai import OpenAI
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH",
     messages=[{"role": "user", "content": "Answer the question."}],
 )
 
@@ -70,7 +70,7 @@ supports one or more `data:image/...;base64,...` URLs in the same request.
 
 ```python
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH--gpt-5.5",
     messages=[
         {
             "role": "user",
@@ -82,6 +82,12 @@ response = client.chat.completions.create(
     ],
 )
 ```
+
+Use `RH` or omit `model` for the server's default `MODEL_NAME`. Use
+`RH--<llm-model-name>` with exactly two hyphens for a per-request backend model
+override. Direct model names such as `gpt-5.5` are rejected so benchmark runners
+do not accidentally confuse the ResearchHarness endpoint label with the backend
+LLM selection.
 
 The API saves each submitted image under `agent_workspace/inputs/images/`,
 passes the image content to the first ResearchHarness model call when the

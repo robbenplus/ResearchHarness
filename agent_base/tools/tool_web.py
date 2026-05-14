@@ -373,11 +373,12 @@ class WebFetch(ToolBase):
         except ValueError as exc:
             return f"[WebFetch] {exc}"
         runtime_deadline = kwargs.get("runtime_deadline")
+        summary_model_name = str(kwargs.get("model_name") or "").strip()
 
         start_time = time.time()
 
         if isinstance(url, str):
-            response = self.readpage_jina(url, goal, runtime_deadline=runtime_deadline)
+            response = self.readpage_jina(url, goal, runtime_deadline=runtime_deadline, summary_model_name=summary_model_name)
         elif isinstance(url, list):
             response = []
             start_time = time.time()
@@ -396,7 +397,12 @@ class WebFetch(ToolBase):
                     cur_response += "Evidence in page: \n" + "The provided webpage content could not be accessed. Please check the URL or file format." + "\n\n"
                     cur_response += "Summary: \n" + "The webpage content could not be processed, and therefore, no information is available." + "\n\n"
                 else:
-                    cur_response = self.readpage_jina(one_url, goal, runtime_deadline=runtime_deadline)
+                    cur_response = self.readpage_jina(
+                        one_url,
+                        goal,
+                        runtime_deadline=runtime_deadline,
+                        summary_model_name=summary_model_name,
+                    )
                 response.append(cur_response)
             response = "\n=======\n".join(response)
         else:
@@ -406,11 +412,18 @@ class WebFetch(ToolBase):
             print(f"Summary Length {len(response)}")
         return response.strip()
 
-    def call_server(self, msgs, max_retries=2, runtime_deadline: Optional[float] = None):
+    def call_server(
+        self,
+        msgs,
+        max_retries=2,
+        runtime_deadline: Optional[float] = None,
+        model_name: str = "",
+    ):
         client = self._ensure_summary_client()
         if client is None or not self._summary_api_base:
             return "[WebFetch] Summary model error: API_BASE is not set."
-        if not self._summary_model_name:
+        summary_model_name = str(model_name or self._summary_model_name or os.environ.get("MODEL_NAME", "")).strip()
+        if not summary_model_name:
             return "[WebFetch] Summary model error: MODEL_NAME is not set."
         last_error = "unknown summary-model error"
         for attempt in range(max_retries):
@@ -424,12 +437,12 @@ class WebFetch(ToolBase):
                     else client
                 )
                 request_kwargs = {
-                    "model": self._summary_model_name,
+                    "model": summary_model_name,
                     "messages": msgs,
                 }
                 apply_sampling_params(
                     request_kwargs,
-                    model_name=self._summary_model_name,
+                    model_name=summary_model_name,
                     temperature=self._summary_temperature,
                     top_p=self._summary_top_p,
                     presence_penalty=self._summary_presence_penalty,
@@ -494,8 +507,21 @@ class WebFetch(ToolBase):
                 return content
         return "[WebFetch] Failed to read page: exhausted retries"
 
-    def readpage_jina(self, url: str, goal: str, runtime_deadline: Optional[float] = None) -> str:
-        summary_page_func = self.call_server
+    def readpage_jina(
+        self,
+        url: str,
+        goal: str,
+        runtime_deadline: Optional[float] = None,
+        summary_model_name: str = "",
+    ) -> str:
+        def summary_page_func(messages, max_retries=2, runtime_deadline: Optional[float] = None):
+            return self.call_server(
+                messages,
+                max_retries=max_retries,
+                runtime_deadline=runtime_deadline,
+                model_name=summary_model_name,
+            )
+
         max_retries = int(os.getenv("LLM_MAX_RETRIES", str(DEFAULT_LLM_MAX_RETRIES)))
 
         content = self.html_readpage_jina(url, runtime_deadline=runtime_deadline)

@@ -127,7 +127,8 @@ messages、工具结果和图片保存路径提示。运行过程中按 `Ctrl+C`
 如果需要浏览器本地界面，运行 `python3 run_frontend.py`。前端使用页面中选择的
 已有 workspace，实时显示工具步骤，支持一张或多张图片附件，并在每次最终回答后
 继续当前对话，直到点击 **New chat**。运行中发送按钮会变成 **Stop**；它会在下一个
-安全点中断，并保留上下文用于下一条消息。
+安全点中断，并保留上下文用于下一条消息。模型下拉框只影响当前/下一次 run，
+不会改写 `.env`，也不会影响其他请求或会话。
 
 ### CLI 参数
 
@@ -271,7 +272,7 @@ from openai import OpenAI
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH",
     messages=[
         {"role": "user", "content": "Answer in one sentence: what is 2 + 2?"}
     ],
@@ -303,7 +304,7 @@ data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH--gpt-5.5",
     messages=[
         {
             "role": "user",
@@ -332,13 +333,19 @@ print(response.choices[0].message.content)
 
 ## 8. API 请求与返回协议
 
+模型路由使用简短的 ResearchHarness label 约定。使用 `RH` 或不传 `model` 时，
+走默认的 `MODEL_NAME`。如果单个请求需要切换底层模型，使用
+`RH--<llm-model-name>`，中间必须是两个 hyphen，例如 `RH--gpt-5.5` 或
+`RH--claude-opus-4-7`。本次选择的底层模型会一致用于 input wrapper、agent loop、
+compaction、`WebFetch` 和 output wrapper，并且只对这个请求生效。
+
 ### `POST /v1/chat/completions`
 
 支持的请求字段：
 
 | 字段 | 是否必需 | 含义 |
 | --- | --- | --- |
-| `model` | 是 | 客户端看到的 model label；不会覆盖 `.env` 中的 `MODEL_NAME`。 |
+| `model` | 否 | 使用 `RH` 或不传时走默认 `MODEL_NAME`。单个请求需要切换底层模型时，必须使用 `RH--<llm-model-name>`，中间是两个 hyphen；直接传 `gpt-5.5` 这类模型名会被拒绝。 |
 | `messages` | 是 | OpenAI-style chat messages。 |
 | `stream` | 否 | 必须不存在或为 `false`；当前不支持 streaming。 |
 | `n` | 否 | 必须不存在或为 `1`。 |
@@ -378,7 +385,7 @@ print(response.choices[0].message.content)
   "id": "chatcmpl_...",
   "object": "chat.completion",
   "created": 1770000000,
-  "model": "researchharness",
+  "model": "RH",
   "choices": [
     {
       "index": 0,

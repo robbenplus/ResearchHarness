@@ -75,6 +75,10 @@ DEFAULT_PRESENCE_PENALTY = 1.1
 DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
 
 
+def default_model_name() -> str:
+    return os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME).strip() or DEFAULT_MODEL_NAME
+
+
 class LLMHardTimeoutError(TimeoutError):
     pass
 
@@ -551,10 +555,10 @@ def image_context_trace_text(result: Any) -> str:
     return text
 
 
-def default_llm_config() -> dict:
-    model_name = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
+def default_llm_config(model_name: Optional[str] = None) -> dict:
+    selected_model = str(model_name or "").strip() or default_model_name()
     return {
-        "model": model_name,
+        "model": selected_model,
         "api_key": os.environ.get("API_KEY", "EMPTY"),
         "api_base": os.environ.get("API_BASE"),
         "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS))),
@@ -1195,6 +1199,7 @@ class MultiTurnReactAgent(BaseAgent):
                             tool_arguments,
                             workspace_root=resolved_workspace_root,
                             runtime_deadline=runtime_deadline,
+                            model_name=self.model,
                         )
                     except KeyboardInterrupt:
                         messages = messages[:tool_turn_message_start]

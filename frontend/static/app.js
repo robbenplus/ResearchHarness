@@ -136,6 +136,7 @@
   var promptInput = document.getElementById("promptInput");
   var runBtn = document.getElementById("runBtn");
   var newBtn = document.getElementById("newBtn");
+  var modelSelect = document.getElementById("modelSelect");
   var pickWorkspaceBtn = document.getElementById("pickWorkspaceBtn");
   var attachBtn = document.getElementById("attachBtn");
   var imageInput = document.getElementById("imageInput");
@@ -234,12 +235,14 @@
       runBtn.classList.remove("is-running");
       runBtn.textContent = "Reply";
       promptInput.placeholder = defaultPromptPlaceholder;
+      if (modelSelect) modelSelect.disabled = true;
       return;
     }
     runBtn.disabled = running && interrupting;
     runBtn.classList.toggle("is-running", running);
     runBtn.textContent = running ? (interrupting ? "Stopping" : "Stop") : "Run";
     promptInput.placeholder = defaultPromptPlaceholder;
+    if (modelSelect) modelSelect.disabled = running;
   }
 
   function setRunning(active, statusText) {
@@ -552,6 +555,7 @@
       type: "start",
       prompt: prompt,
       workspace_root: workspaceInput.value,
+      model_name: modelSelect ? modelSelect.value : "",
       images: sentImages,
       continue_conversation: continueConversation
     }));

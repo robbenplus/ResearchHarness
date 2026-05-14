@@ -85,6 +85,8 @@ If you are new to the project, the recommended reading order is:
 
 ## 📰 News
 
+- **2026-05-14: Per-request and per-run model routing**
+  The OpenAI-compatible API now accepts `model="RH"` for the default backend model and `model="RH--<llm-model-name>"` for a request-local override. The selected backend model is used consistently by the input wrapper, agent loop, compaction, `WebFetch`, and output wrapper without mutating global environment variables. The local frontend and hosted Space also expose a per-run model dropdown.
 - **2026-05-13: Frontend math rendering**
   The local browser frontend and hosted Space now render common LaTeX math delimiters in final assistant Markdown answers, including `$$...$$`, `\(...\)`, and `\[...\]`, while leaving tool outputs and runtime logs unchanged.
 - **2026-05-13: Local browser frontend and conversational CLI**
@@ -478,6 +480,8 @@ The frontend keeps only the current conversation in the page. It runs the agent
 directly in the selected existing workspace folder, streams assistant rounds and
 tool results over WebSocket, supports `AskUser` replies through the same chat
 input box, and accepts image attachments by file picker, drag-and-drop, or paste.
+The model dropdown is local to each run; changing it affects the next run only
+and does not mutate `.env` or other sessions.
 After a run finishes, typing another message continues the same conversation
 with prior messages preserved. Click **New chat** to clear the current
 conversation and start over. During a running step, the send button becomes
@@ -591,6 +595,19 @@ python3 run_server.py \
   --output-wrapper
 ```
 
+### API Model Selection
+
+The OpenAI-compatible `model` field is a ResearchHarness routing label, not a
+provider selector. Use `RH` or omit `model` to run the default backend model
+from `MODEL_NAME`. To override the backend model for one request, use the exact
+two-hyphen prefix form `RH--<llm-model-name>`, for example `RH--gpt-5.5` or
+`RH--claude-opus-4-7`.
+
+Direct model names such as `gpt-5.5` are rejected. The override is local to that
+API request; it does not mutate environment variables and does not affect other
+concurrent requests. The agent run, input wrapper, output wrapper, compaction,
+and `WebFetch` summary calls all use the same selected backend model.
+
 ### Text Request
 
 Use the normal OpenAI SDK from another terminal, application, or benchmark
@@ -602,7 +619,7 @@ from openai import OpenAI
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH",
     messages=[
         {"role": "user", "content": "Answer the question in one sentence: what is 2 + 2?"}
     ],
@@ -633,7 +650,7 @@ data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH--gpt-5.5",
     messages=[
         {
             "role": "user",

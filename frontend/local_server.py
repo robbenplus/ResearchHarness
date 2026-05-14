@@ -192,13 +192,14 @@ def _run_agent_thread(
     workspace_root: Path,
     initial_content_parts: list[dict[str, Any]],
     prior_messages: list[dict[str, Any]] | None = None,
+    model_name: str = "",
 ) -> None:
     try:
         load_dotenv(PROJECT_ROOT / ".env")
         require_required_env("ResearchHarness frontend")
         agent = FrontendInteractiveAgent(
             bridge=bridge,
-            llm=default_llm_config(),
+            llm=default_llm_config(model_name=model_name or None),
             trace_dir=FRONTEND_TRACE_DIR,
             role_prompt=FRONTEND_ROLE_PROMPT or None,
         )
@@ -368,6 +369,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     run_prompt = _prompt_with_uploaded_image_paths(prompt, saved_paths)
                     continue_conversation = bool(message.get("continue_conversation"))
+                    model_name = str(message.get("model_name", "") or "").strip()
                     prior_messages = None
                     if continue_conversation:
                         if not bridge.conversation_messages:
@@ -396,6 +398,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "workspace_root": workspace_root,
                         "initial_content_parts": image_parts,
                         "prior_messages": prior_messages,
+                        "model_name": model_name,
                     },
                     daemon=True,
                 )

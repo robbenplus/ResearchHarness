@@ -48,7 +48,7 @@ def main() -> int:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     payload = {
-        "model": "researchharness",
+        "model": "RH--fake-vision-model",
         "messages": [
             {"role": "system", "content": "Answer exactly in the requested format."},
             {
@@ -85,7 +85,7 @@ def main() -> int:
     parsed_plan = extract_json_object(
         '```json\n{"agent_instruction": "Use the saved image.", "output_contract": "Return JSON.", "wrapper_notes": "ok"}\n```'
     )
-    response = make_chat_completion_response(request_id="chatcmpl_test", model="researchharness", content='{"answer":"white"}')
+    response = make_chat_completion_response(request_id="chatcmpl_test", model="RH", content='{"answer":"white"}')
 
     trace_dir = TMP_DIR / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -136,6 +136,7 @@ def main() -> int:
         def __init__(self, function_list, llm, trace_dir, role_prompt=None):
             self.trace_dir = Path(trace_dir)
             fake_seen["trace_dir"] = str(self.trace_dir)
+            fake_seen["model"] = str(llm.get("model", ""))
 
         def call_compaction_api(self, messages, max_output_tokens=None):
             if messages and messages[0]["content"].startswith("You are the ResearchHarness input wrapper"):
@@ -170,8 +171,8 @@ def main() -> int:
     previous_agent_cls = openai_server.MultiTurnReactAgent
     previous_default_llm_config = openai_server.default_llm_config
     openai_server.MultiTurnReactAgent = FakeAPIAgent
-    openai_server.default_llm_config = lambda: {
-        "model": "fake-vision-model",
+    openai_server.default_llm_config = lambda model_name=None: {
+        "model": str(model_name or "fake-vision-model"),
         "api_key": "fake",
         "api_base": "http://fake.invalid/v1",
         "generate_cfg": {
@@ -190,6 +191,19 @@ def main() -> int:
     finally:
         openai_server.MultiTurnReactAgent = previous_agent_cls
         openai_server.default_llm_config = previous_default_llm_config
+
+    invalid_model_rejected = False
+    try:
+        invalid_payload = dict(payload)
+        invalid_payload["model"] = "fake-vision-model"
+        run_chat_completion(
+            invalid_payload,
+            ServerConfig(api_runs_dir=api_runs_root / "invalid_model", input_wrapper=False, output_wrapper=False),
+        )
+    except openai_server.OpenAICompatError as exc:
+        invalid_model_rejected = exc.status_code == 400 and "RH--" in exc.message
+
+    default_model_label, default_backend_model = openai_server.resolve_api_model_selection("")
 
     run_dirs = sorted(api_runs_root.glob("run_*"))
     api_run_dir = run_dirs[0] if run_dirs else None
@@ -235,6 +249,11 @@ def main() -> int:
         and session_state_path.parent == trace_dir
         and not (TMP_DIR / "agent_workspace" / "_session_state.json").exists()
         and api_response["choices"][0]["message"]["content"] == '{"expression":"7 + 5","answer":12}'
+        and api_response["model"] == "RH--fake-vision-model"
+        and fake_seen.get("model") == "fake-vision-model"
+        and invalid_model_rejected
+        and default_model_label == "RH"
+        and bool(default_backend_model)
         and api_run_dir is not None
         and api_agent_workspace is not None
         and api_agent_workspace.is_dir()
@@ -270,6 +289,8 @@ def main() -> int:
                     "api_response": api_response,
                     "api_run_dir": str(api_run_dir) if api_run_dir else "",
                     "fake_seen": fake_seen,
+                    "invalid_model_rejected": invalid_model_rejected,
+                    "default_model_selection": [default_model_label, default_backend_model],
                 },
                 ensure_ascii=False,
                 indent=2,

@@ -135,7 +135,8 @@ existing workspace selected in the page, streams tool steps live, accepts one or
 more image attachments, and continues the current conversation after each final
 answer until you click **New chat**. While running, the send button becomes
 **Stop**; it interrupts at the next safe point and keeps the conversation
-context for the next message.
+context for the next message. The model dropdown is local to each run; changing
+it affects the next run only and does not mutate `.env` or other sessions.
 
 ### CLI Parameters
 
@@ -287,7 +288,7 @@ from openai import OpenAI
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH",
     messages=[
         {"role": "user", "content": "Answer in one sentence: what is 2 + 2?"}
     ],
@@ -321,7 +322,7 @@ data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode
 client = OpenAI(api_key="unused", base_url="http://127.0.0.1:8686/v1")
 
 response = client.chat.completions.create(
-    model="researchharness",
+    model="RH--gpt-5.5",
     messages=[
         {
             "role": "user",
@@ -350,13 +351,20 @@ Expected answer shape:
 
 ## 8. API Request and Response Contract
 
+Model routing follows a compact ResearchHarness label convention. Use `RH` or
+omit `model` to run the default backend `MODEL_NAME`. Use
+`RH--<llm-model-name>` with exactly two hyphens for a per-request override, for
+example `RH--gpt-5.5` or `RH--claude-opus-4-7`. The selected backend model is
+used consistently by the input wrapper, agent loop, compaction, `WebFetch`, and
+output wrapper for that request only.
+
 ### `POST /v1/chat/completions`
 
 Supported request fields:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `model` | yes | Client-visible model label. It does not override `MODEL_NAME`; the backend model comes from `.env`. |
+| `model` | no | Use `RH` or omit it for the default `MODEL_NAME`. Use `RH--<llm-model-name>` with exactly two hyphens for a per-request backend override. Direct model names such as `gpt-5.5` are rejected. |
 | `messages` | yes | OpenAI-style chat messages. |
 | `stream` | no | Must be absent or `false`; streaming is not supported. |
 | `n` | no | Must be absent or `1`. |
@@ -396,7 +404,7 @@ Response shape:
   "id": "chatcmpl_...",
   "object": "chat.completion",
   "created": 1770000000,
-  "model": "researchharness",
+  "model": "RH",
   "choices": [
     {
       "index": 0,
