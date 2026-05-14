@@ -136,6 +136,10 @@ button {
   box-shadow: var(--surface-shadow);
 }
 
+.topbar:has(.model-dropdown.open) {
+  z-index: 20;
+}
+
 .brand {
   display: flex;
   align-items: center;

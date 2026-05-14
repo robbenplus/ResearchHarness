@@ -184,6 +184,7 @@ def test_frontend_static_interaction_contract() -> None:
     assert "position: sticky" in css
     assert "top: 66px" in css
     assert "z-index: 4" in css
+    assert ".topbar:has(.model-dropdown.open)" in css
     assert "height: 100dvh" in css
     assert ".chat-shell > *" in css
     assert "overflow-wrap: anywhere" in css
