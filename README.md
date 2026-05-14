@@ -11,7 +11,7 @@
 [![Runtime](https://img.shields.io/badge/Runtime-Native%20Tool%20Calling-4f46e5.svg)](#-how-it-works)
 [![Trace](https://img.shields.io/badge/Trace-Flat%20JSONL-0f766e.svg)](#execution-records-and-long-runs)
 [![Benchmark](https://img.shields.io/badge/Benchmark-ResearchClawBench-f59e0b.svg)](https://github.com/InternScience/ResearchClawBench)
-[![Online Chat](https://img.shields.io/badge/Online%20Chat-HuggingFace-ff9d00.svg)](https://huggingface.co/spaces/CoCoOne/ResearchHarness)
+[![Online Chat](https://img.shields.io/badge/Online%20Chat-HuggingFace-ff9d00.svg)](https://huggingface.co/spaces/InternScience/ResearchHarness)
 
 </div>
 
@@ -31,7 +31,7 @@ and easy to trust as infrastructure.
 
 📚 **Tutorials:** [English](docs/tutorial_en.md) | [中文](docs/tutorial_zh.md)
 
-🚀 **Try it online now:** [ResearchHarness Online Chat](https://huggingface.co/spaces/CoCoOne/ResearchHarness)
+🚀 **Try it online now:** [ResearchHarness Online Chat](https://huggingface.co/spaces/InternScience/ResearchHarness)
 
 📮 **Contact:** [xu_wanghan@sjtu.edu.cn](https://black-yt.github.io/)
 
