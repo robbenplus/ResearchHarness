@@ -2,11 +2,12 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
+import re
 import signal
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Type
+from typing import Any, Callable, Dict, List, Optional, Sequence, Type
 
 from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 import tiktoken
@@ -19,11 +20,23 @@ from agent_base.prompt import composed_system_prompt
 from agent_base.session_state import AgentSessionState, CompactionRecord, persist_session_state, resolve_session_state_path
 from agent_base.trace_utils import FlatTraceWriter
 from agent_base.tools.tooling import normalize_workspace_root
+from agent_base.tools.tool_extra import StrReplaceEditor
 from agent_base.tools.tool_file import Edit, Glob, Grep, Read, ReadImage, ReadPDF, Write
 from agent_base.tools.tool_runtime import Bash, TerminalInterrupt, TerminalKill, TerminalRead, TerminalStart, TerminalWrite
 from agent_base.tools.tool_user import AskUser
 from agent_base.tools.tool_web import DownloadPDF, ScholarSearch, WebFetch, WebSearch
-from agent_base.utils import PROJECT_ROOT, env_flag, load_dotenv, safe_jsonable
+from agent_base.utils import (
+    PROJECT_ROOT,
+    MissingRequiredEnvError,
+    append_saved_image_paths_to_prompt,
+    env_flag,
+    image_input_content_parts,
+    load_dotenv,
+    read_role_prompt_files,
+    require_required_env,
+    safe_jsonable,
+    stage_image_file_for_input,
+)
 
 import datetime
 import random
@@ -50,6 +63,11 @@ AVAILABLE_TOOLS = [
     TerminalKill(),
 ]
 AVAILABLE_TOOL_MAP = {tool.name: tool for tool in AVAILABLE_TOOLS}
+OPTIONAL_TOOLS = [
+    StrReplaceEditor(),
+]
+OPTIONAL_TOOL_MAP = {tool.name: tool for tool in OPTIONAL_TOOLS}
+ALL_TOOL_MAP = {**AVAILABLE_TOOL_MAP, **OPTIONAL_TOOL_MAP}
 DEFAULT_IMAGE_TOKEN_ESTIMATE = 1536
 DEFAULT_MODEL_NAME = "gpt-5.4"
 DEFAULT_MAX_LLM_CALLS = 100
@@ -62,6 +80,10 @@ DEFAULT_TEMPERATURE = 0.6
 DEFAULT_TOP_P = 0.95
 DEFAULT_PRESENCE_PENALTY = 1.1
 DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
+
+
+def default_model_name() -> str:
+    return os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME).strip() or DEFAULT_MODEL_NAME
 
 
 class LLMHardTimeoutError(TimeoutError):
@@ -140,6 +162,137 @@ def assistant_text_content(content: Any) -> str:
     return str(content)
 
 
+def message_trace_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    text_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            text_parts.append(str(part))
+            continue
+        part_type = part.get("type")
+        if part_type == "text":
+            text_parts.append(str(part.get("text", "")))
+        elif part_type == "image_url":
+            image_url = part.get("image_url", {})
+            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+            url_text = str(url)
+            if url_text.startswith("data:image/"):
+                url_text = url_text.split(",", 1)[0] + ",...(base64 omitted)"
+            text_parts.append(f"[image_url: {url_text}]")
+        else:
+            text_parts.append(str(part))
+    return "\n".join(text for text in text_parts if text)
+
+
+def _message_has_image_content(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
+
+
+def _last_assistant_message_index(messages: Sequence[dict[str, Any]]) -> int:
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], dict) and messages[index].get("role") == "assistant":
+            return index
+    return -1
+
+
+def _image_reference_summary(part: dict[str, Any]) -> str:
+    image_url = part.get("image_url", {})
+    url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+    url_text = str(url)
+    if url_text.startswith("data:image/"):
+        return url_text.split(",", 1)[0] + ",...(base64 omitted)"
+    elif len(url_text) > 180:
+        return url_text[:180] + "...(truncated)"
+    return url_text or "unavailable"
+
+
+def _image_path_hint_from_text(text: str) -> str:
+    patterns = (
+        r"\[User-provided image saved at ([^\]\n]+)\]",
+        r"Local image path:\s*([^\n]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _omitted_image_part_text(part: dict[str, Any], *, saved_path_hint: str = "") -> str:
+    url_text = _image_reference_summary(part)
+    path_text = f" Saved local path: {saved_path_hint}." if saved_path_hint else ""
+    return (
+        "[Previous image omitted from this model request to avoid repeatedly resending image bytes. "
+        f"Original image reference: {url_text}. "
+        f"{path_text} "
+        "The nearby conversation text or tool metadata records saved local paths when available; "
+        "use ReadImage on the saved path if visual details are needed again.]"
+    )
+
+
+def _replace_image_parts_with_text(content: Any, *, message_index: int) -> tuple[Any, list[dict[str, Any]]]:
+    if not isinstance(content, list):
+        return content, []
+    replacement: list[Any] = []
+    omitted_images: list[dict[str, Any]] = []
+    image_index = 0
+    last_text_path_hint = ""
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            path_hint = _image_path_hint_from_text(str(part.get("text", "")))
+            if path_hint:
+                last_text_path_hint = path_hint
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            omitted_images.append(
+                {
+                    "message_index": message_index,
+                    "image_index": image_index,
+                    "reference_summary": _image_reference_summary(part),
+                    "saved_path_hint": last_text_path_hint,
+                }
+            )
+            replacement.append({"type": "text", "text": _omitted_image_part_text(part, saved_path_hint=last_text_path_hint)})
+        else:
+            replacement.append(safe_jsonable(part))
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            image_index += 1
+    return replacement, omitted_images
+
+
+def prepare_messages_for_llm(messages: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return request messages with old image bytes replaced by text references.
+
+    Image content parts are only needed immediately after they enter the
+    conversation. Older image parts stay represented as text so the agent can
+    re-read saved paths with ReadImage without resending the image every round.
+    """
+    last_assistant_index = _last_assistant_message_index(messages)
+    request_messages: list[dict[str, Any]] = []
+    omitted_images: list[dict[str, Any]] = []
+    for index, raw_message in enumerate(messages):
+        message = safe_jsonable(raw_message)
+        if not isinstance(message, dict):
+            request_messages.append({"role": "user", "content": str(message)})
+            continue
+        if index <= last_assistant_index and _message_has_image_content(message):
+            message = dict(message)
+            message["content"], message_omitted_images = _replace_image_parts_with_text(
+                message.get("content"),
+                message_index=index,
+            )
+            omitted_images.extend(message_omitted_images)
+        request_messages.append(message)
+    image_aging = {
+        "omitted_image_count": len(omitted_images),
+        "omitted_images": omitted_images,
+    }
+    return request_messages, image_aging
+
+
 def assistant_reasoning_content(message: Any) -> Optional[Any]:
     if hasattr(message, "model_dump"):
         try:
@@ -174,17 +327,21 @@ def input_tokens_from_usage(usage: Any) -> Optional[int]:
 def llm_call_trace_payload(
     *,
     request_messages: Sequence[dict[str, Any]],
+    image_aging: Optional[dict[str, Any]] = None,
     response: Any,
     model_name: str,
     native_tools: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "model_name": model_name,
         "request_messages": safe_jsonable(list(request_messages)),
         "tools_enabled": bool(native_tools),
         "native_tools": safe_jsonable(list(native_tools)),
         "response": safe_jsonable(response),
     }
+    if image_aging and int(image_aging.get("omitted_image_count", 0) or 0) > 0:
+        payload["image_aging"] = safe_jsonable(image_aging)
+    return payload
 
 
 def compaction_trace_payload(
@@ -245,7 +402,32 @@ def resolved_tool_names(function_list: Optional[Sequence[str]]) -> list[str]:
 
 
 def available_tool_schemas(function_list: Optional[Sequence[str]] = None) -> list[dict[str, Any]]:
-    return [tool_schema(AVAILABLE_TOOL_MAP[name]) for name in resolved_tool_names(function_list)]
+    names = resolved_tool_names(function_list)
+    unknown_tools = [name for name in names if name not in ALL_TOOL_MAP]
+    if unknown_tools:
+        raise ValueError(f"Unknown tools requested: {unknown_tools}")
+    return [tool_schema(ALL_TOOL_MAP[name]) for name in names]
+
+
+def resolve_extra_tool_names(extra_tools: Optional[Sequence[str]]) -> list[str]:
+    resolved: list[str] = []
+    for raw_name in extra_tools or []:
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        if name not in OPTIONAL_TOOL_MAP:
+            raise ValueError(f"Unknown extra tool requested: {name}")
+        if name not in resolved:
+            resolved.append(name)
+    return resolved
+
+
+def default_tool_names(*, include_ask_user: bool = True, extra_tools: Optional[Sequence[str]] = None) -> list[str]:
+    names = [name for name in AVAILABLE_TOOL_MAP if include_ask_user or name != "AskUser"]
+    for name in resolve_extra_tool_names(extra_tools):
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def normalized_tool_call(tool_call: Any) -> dict[str, Any]:
@@ -405,10 +587,10 @@ def image_context_trace_text(result: Any) -> str:
     return text
 
 
-def default_llm_config() -> dict:
-    model_name = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
+def default_llm_config(model_name: Optional[str] = None) -> dict:
+    selected_model = str(model_name or "").strip() or default_model_name()
     return {
-        "model": model_name,
+        "model": selected_model,
         "api_key": os.environ.get("API_KEY", "EMPTY"),
         "api_base": os.environ.get("API_BASE"),
         "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS))),
@@ -448,7 +630,7 @@ class MultiTurnReactAgent(BaseAgent):
         requested_tools = self.resolve_function_list(function_list)
         if requested_tools is None:
             requested_tools = list(AVAILABLE_TOOL_MAP.keys())
-        unknown_tools = [tool for tool in requested_tools if tool not in AVAILABLE_TOOL_MAP]
+        unknown_tools = [tool for tool in requested_tools if tool not in ALL_TOOL_MAP]
         if unknown_tools:
             raise ValueError(f"Unknown tools requested: {unknown_tools}")
         if "model" not in llm or not str(llm["model"]).strip():
@@ -456,7 +638,7 @@ class MultiTurnReactAgent(BaseAgent):
         if "generate_cfg" not in llm or not isinstance(llm["generate_cfg"], dict):
             raise ValueError('llm["generate_cfg"] must be a dict.')
 
-        self.tool_map = {tool_name: AVAILABLE_TOOL_MAP[tool_name] for tool_name in requested_tools}
+        self.tool_map = {tool_name: ALL_TOOL_MAP[tool_name] for tool_name in requested_tools}
         self.tool_names = list(self.tool_map.keys())
         self.model = str(llm["model"])
         self.llm_generate_cfg = llm["generate_cfg"]
@@ -669,6 +851,9 @@ class MultiTurnReactAgent(BaseAgent):
         prompt: str,
         workspace_root: Optional[str] = None,
         event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        initial_content_parts: Optional[Sequence[dict[str, Any]]] = None,
+        prior_messages: Optional[Sequence[dict[str, Any]]] = None,
+        interrupt_event: Optional[threading.Event] = None,
     ) -> dict:
         """Internal execution path with trace data for tests and debugging."""
         if not isinstance(prompt, str) or not prompt.strip():
@@ -686,7 +871,26 @@ class MultiTurnReactAgent(BaseAgent):
             "Relative local file paths resolve from the workspace root.\n\n"
             f"Prompt:\n{prompt_text}"
         )
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
+        if initial_content_parts is not None:
+            if not isinstance(initial_content_parts, Sequence) or isinstance(initial_content_parts, (str, bytes)):
+                raise ValueError("initial_content_parts must be a sequence of OpenAI-style content part dicts.")
+            safe_initial_parts = safe_jsonable(list(initial_content_parts))
+            if not isinstance(safe_initial_parts, list) or not all(isinstance(part, dict) for part in safe_initial_parts):
+                raise ValueError("initial_content_parts must contain only dict content parts.")
+            user_content: Any = [{"type": "text", "text": user_content}, *safe_initial_parts]
+        continuing_conversation = prior_messages is not None
+        if continuing_conversation:
+            if not isinstance(prior_messages, Sequence) or isinstance(prior_messages, (str, bytes)):
+                raise ValueError("prior_messages must be a sequence of message dicts.")
+            safe_prior_messages = safe_jsonable(list(prior_messages))
+            if not isinstance(safe_prior_messages, list) or not all(isinstance(message, dict) for message in safe_prior_messages):
+                raise ValueError("prior_messages must contain only dict messages.")
+            messages = list(safe_prior_messages)
+            if not messages or messages[0].get("role") != "system":
+                messages.insert(0, {"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
         max_llm_calls = self.max_llm_calls
         max_input_tokens = int(self.llm_generate_cfg.get("max_input_tokens", DEFAULT_MAX_INPUT_TOKENS))
         max_output_tokens = int(self.llm_generate_cfg.get("max_output_tokens", llm_max_output_tokens()))
@@ -710,7 +914,7 @@ class MultiTurnReactAgent(BaseAgent):
             on_event=event_callback,
         )
         self.trace_path = trace_writer.path
-        self.session_state_path = resolve_session_state_path(resolved_workspace_root)
+        self.session_state_path = resolve_session_state_path(trace_dir) if trace_dir else None
         session_state = AgentSessionState(
             run_id=trace_writer.run_id,
             model_name=self.model,
@@ -732,7 +936,8 @@ class MultiTurnReactAgent(BaseAgent):
             session_state.termination = termination
             session_state.error = error
             session_state.capture_messages(messages)
-            persist_session_state(self.session_state_path, session_state)
+            if self.session_state_path:
+                persist_session_state(self.session_state_path, session_state)
 
         def finalize(result_text: str, termination: str, *, role: str = "runtime", error: str = "") -> dict[str, Any]:
             trace_writer.append(
@@ -752,11 +957,31 @@ class MultiTurnReactAgent(BaseAgent):
                 "session_state_path": str(self.session_state_path) if self.session_state_path else "",
             }
 
-        trace_writer.append(role="system", text=system_prompt, turn_index=0)
-        trace_writer.append(role="user", text=user_content, turn_index=0)
+        def interruption_requested() -> bool:
+            return bool(interrupt_event is not None and interrupt_event.is_set())
+
+        def finalize_interrupted() -> dict[str, Any]:
+            return finalize(
+                "Interrupted by user. Continue with a follow-up prompt to resume from the current context.",
+                "interrupted",
+                role="runtime",
+                error="user interrupt",
+            )
+
+        if continuing_conversation:
+            trace_writer.append(
+                role="runtime",
+                text="Continuing existing conversation with prior messages.",
+                turn_index=0,
+            )
+        else:
+            trace_writer.append(role="system", text=system_prompt, turn_index=0)
+        trace_writer.append(role="user", text=message_trace_text(user_content), turn_index=0)
         persist_state()
 
         while num_llm_calls_available > 0 and round_index < self.max_rounds:
+            if interruption_requested():
+                return finalize_interrupted()
             if remaining_runtime_seconds(runtime_deadline) is not None and remaining_runtime_seconds(runtime_deadline) <= 0:
                 result_text = "No result found before the maximum agent runtime limit."
                 termination = f"agent runtime limit reached: {agent_runtime_limit}s"
@@ -844,10 +1069,17 @@ class MultiTurnReactAgent(BaseAgent):
                 result_text = "No result found before the maximum input token limit."
                 termination = f"input token limit reached: {current_token_estimate} > {max_input_tokens}"
                 return finalize(result_text, termination, error=termination)
+            if interruption_requested():
+                return finalize_interrupted()
             round_index += 1
             num_llm_calls_available -= 1
-            llm_request_messages = safe_jsonable(messages)
-            llm_reply = self.call_llm_api(messages, runtime_deadline=runtime_deadline)
+            llm_request_messages, image_aging = prepare_messages_for_llm(messages)
+            try:
+                llm_reply = self.call_llm_api(llm_request_messages, runtime_deadline=runtime_deadline)
+            except KeyboardInterrupt:
+                return finalize_interrupted()
+            if interruption_requested():
+                return finalize_interrupted()
             trace_writer.append(
                 role="runtime",
                 text="",
@@ -855,6 +1087,7 @@ class MultiTurnReactAgent(BaseAgent):
                 capture_type="llm_call",
                 payload=llm_call_trace_payload(
                     request_messages=llm_request_messages,
+                    image_aging=image_aging,
                     response=llm_reply,
                     model_name=self.model,
                     native_tools=self._native_tools,
@@ -981,6 +1214,7 @@ class MultiTurnReactAgent(BaseAgent):
                     reasoning_content=assistant_reasoning,
                     raw_message=assistant_raw_message,
                 )
+                tool_turn_message_start = len(messages)
                 messages.append(assistant_message)
                 deferred_image_contexts: list[tuple[str, str, Any, Any, dict[str, Any]]] = []
                 for tool_call, tool_arguments in zip(assistant_tool_calls, assistant_tool_arguments):
@@ -991,12 +1225,17 @@ class MultiTurnReactAgent(BaseAgent):
                     tool_call_id = str(tool_call.get("id", ""))
                     function_block = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
                     tool_name = str(function_block.get("name", ""))
-                    result = self.custom_call_tool(
-                        tool_name,
-                        tool_arguments,
-                        workspace_root=resolved_workspace_root,
-                        runtime_deadline=runtime_deadline,
-                    )
+                    try:
+                        result = self.custom_call_tool(
+                            tool_name,
+                            tool_arguments,
+                            workspace_root=resolved_workspace_root,
+                            runtime_deadline=runtime_deadline,
+                            model_name=self.model,
+                        )
+                    except KeyboardInterrupt:
+                        messages = messages[:tool_turn_message_start]
+                        return finalize_interrupted()
                     tool_result_text = tool_result_message_content(result)
                     messages.append(api_tool_message(tool_call_id, result))
                     trace_writer.append(
@@ -1026,6 +1265,8 @@ class MultiTurnReactAgent(BaseAgent):
                         termination = f"agent runtime limit reached: {agent_runtime_limit}s"
                         return finalize(result_text, termination, error=termination)
                 persist_state()
+                if interruption_requested():
+                    return finalize_interrupted()
             elif assistant_has_meaningful_text(assistant_content):
                 current_result_text = assistant_text.strip()
                 messages.append(
@@ -1110,14 +1351,6 @@ class MultiTurnReactAgent(BaseAgent):
         return execute_tool_by_name(self.tool_map, tool_name, tool_args, **kwargs)
 
 
-def _read_role_prompt_files(paths: Iterable[str]) -> str:
-    blocks: list[str] = []
-    for raw_path in paths:
-        path = Path(str(raw_path)).expanduser()
-        blocks.append(path.read_text(encoding="utf-8").strip())
-    return "\n\n".join(block for block in blocks if block.strip())
-
-
 def _path_has_suffix(path: Path, suffix_parts: Sequence[str]) -> bool:
     normalized_parts = tuple(part.casefold() for part in path.parts)
     normalized_suffix = tuple(part.casefold() for part in suffix_parts)
@@ -1139,7 +1372,7 @@ def resolve_agent_class_for_role_prompt_files(role_prompt_files: Sequence[str]) 
     return MultiTurnReactAgent
 
 
-def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], str, list[str]]:
+def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str], str, list[str], list[str], Optional[bool], list[str]]:
     parser = argparse.ArgumentParser(description="Run the local agent directly from agent_base.react_agent.")
     parser.add_argument("prompt", nargs="*", help="Prompt text.")
     parser.add_argument("--prompt-file", help="Optional UTF-8 text file containing the prompt.")
@@ -1156,6 +1389,29 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str],
         metavar="PATH",
         help="Append one role-specific prompt file to the base system prompt. May be passed multiple times.",
     )
+    parser.add_argument(
+        "--images",
+        action="append",
+        nargs="+",
+        default=[],
+        dest="image_paths",
+        metavar="PATH",
+        help="Attach one or more local image paths to the initial user message.",
+    )
+    parser.add_argument(
+        "--chat",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Continue asking for follow-up user messages after each final answer. Defaults to on only in an interactive terminal.",
+    )
+    parser.add_argument(
+        "--extra-tool",
+        action="append",
+        default=[],
+        dest="extra_tools",
+        metavar="NAME",
+        help="Enable one optional extra tool for this run. Currently supported: str_replace_editor. May be passed multiple times.",
+    )
     args = parser.parse_args(argv)
 
     prompt_text = ""
@@ -1166,36 +1422,81 @@ def _parse_cli_args(argv: list[str]) -> tuple[str, Optional[str], Optional[str],
 
     if not prompt_text:
         raise ValueError("A non-empty prompt is required via positional args or --prompt-file.")
-    role_prompt = _read_role_prompt_files(args.role_prompt_files)
+    role_prompt = read_role_prompt_files(args.role_prompt_files)
     return (
         prompt_text,
         args.trace_dir,
         args.workspace_root,
         role_prompt,
         list(args.role_prompt_files),
+        [path for group in args.image_paths for path in group],
+        args.chat,
+        resolve_extra_tool_names(args.extra_tools),
     )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     try:
-        prompt_text, trace_dir, workspace_root, role_prompt, role_prompt_files = _parse_cli_args(argv or sys.argv[1:])
+        require_required_env("ResearchHarness agent")
+        prompt_text, trace_dir, workspace_root, role_prompt, role_prompt_files, image_paths, chat_arg, extra_tools = _parse_cli_args(argv or sys.argv[1:])
         agent_cls = resolve_agent_class_for_role_prompt_files(role_prompt_files)
+        forbidden_tools = set(getattr(agent_cls, "forbidden_tool_names", set()))
         agent = agent_cls(
+            function_list=(
+                default_tool_names(include_ask_user="AskUser" not in forbidden_tools, extra_tools=extra_tools)
+                if extra_tools
+                else None
+            ),
             llm=default_llm_config(),
             trace_dir=trace_dir,
             role_prompt=role_prompt or None,
         )
         resolved_workspace_root = normalize_workspace_root(workspace_root)
+        initial_content_parts: list[dict[str, Any]] = []
+        saved_image_paths: list[str] = []
+        for image_index, image_path in enumerate(image_paths):
+            saved_path, data_url = stage_image_file_for_input(
+                image_path,
+                workspace_root=resolved_workspace_root,
+                image_index=image_index,
+            )
+            saved_image_paths.append(saved_path)
+            initial_content_parts.extend(image_input_content_parts(data_url, saved_path))
+        run_prompt = append_saved_image_paths_to_prompt(prompt_text, saved_image_paths)
         printer = ConsoleEventPrinter(
             model_name=agent.model,
             workspace_root=resolved_workspace_root,
-            prompt=prompt_text,
+            prompt=run_prompt,
         )
         printer.print_header()
-        agent._run_session(prompt_text, workspace_root=workspace_root, event_callback=printer.handle_event)
+        session = agent._run_session(
+            run_prompt,
+            workspace_root=str(resolved_workspace_root),
+            event_callback=printer.handle_event,
+            initial_content_parts=initial_content_parts or None,
+        )
+        chat_enabled = chat_arg if chat_arg is not None else (sys.stdin.isatty() and sys.stdout.isatty())
+        messages = session.get("messages", [])
+        while chat_enabled:
+            try:
+                followup = input("\n[ResearchHarness] Follow-up (Ctrl+C to exit): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n[ResearchHarness] Chat ended.")
+                break
+            if not followup:
+                continue
+            print(f"\n[ResearchHarness] Continuing conversation: {followup}")
+            printer.reset_rounds()
+            session = agent._run_session(
+                followup,
+                workspace_root=str(resolved_workspace_root),
+                event_callback=printer.handle_event,
+                prior_messages=messages,
+            )
+            messages = session.get("messages", messages)
         return 0
-    except ValueError as exc:
+    except (MissingRequiredEnvError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

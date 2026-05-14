@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from test_support import TEST_RUNS_DIR, bootstrap, load_trace_records, preview
+from test_support import TEST_RUNS_DIR, bootstrap, load_trace_records, preview, single_trace_path
 
 
 TMP_DIR = TEST_RUNS_DIR / "edge_case_checks"
@@ -42,6 +42,29 @@ def check_workspace_root_is_created_when_missing() -> tuple[bool, str]:
     resolved = normalize_workspace_root(case_dir)
     ok = resolved == case_dir.resolve() and resolved.is_dir()
     return ok, json.dumps({"resolved": str(resolved), "exists": resolved.exists()}, indent=2)
+
+
+def check_required_env_is_enforced() -> tuple[bool, str]:
+    from agent_base.utils import REQUIRED_ENV_VARS, MissingRequiredEnvError, require_required_env
+
+    previous = {key: os.environ.get(key) for key in REQUIRED_ENV_VARS}
+    try:
+        for key in REQUIRED_ENV_VARS:
+            os.environ.pop(key, None)
+        try:
+            require_required_env("test context")
+        except MissingRequiredEnvError as exc:
+            text = str(exc)
+            missing = [key for key in REQUIRED_ENV_VARS if key in text]
+            ok = len(missing) == len(REQUIRED_ENV_VARS) and "test context missing required environment variables" in text
+            return ok, json.dumps({"error": text, "missing_reported": missing}, indent=2)
+        return False, json.dumps({"error": "missing env did not raise"}, indent=2)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def check_llm_hard_timeout_interrupts_blocking_call() -> tuple[bool, str]:
@@ -313,7 +336,7 @@ def check_parallel_readimage_tool_message_order() -> tuple[bool, str]:
         session.get("termination") == "result"
         and session.get("result_text") == "done"
         and roles_after_assistant[:7] == ["assistant", "tool", "tool", "tool", "user", "user", "user"]
-        and roles_after_assistant[-1] == "assistant"
+        and len(roles_after_assistant) == 7
     )
     return ok, detail
 
@@ -404,6 +427,117 @@ def check_deepseek_readimage_falls_back_to_text_only_context() -> tuple[bool, st
         session.get("termination") == "result"
         and session.get("result_text") == "done"
         and fallback_user_message is not None
+    )
+    return ok, detail
+
+
+def check_old_image_parts_are_omitted_from_followup_requests_but_traced() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "old_image_parts_omitted"
+    trace_dir = TMP_DIR / "old_image_parts_omitted_trace"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    shutil.rmtree(trace_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir.mkdir(parents=True, exist_ok=True)
+
+    first_image = "data:image/png;base64,Zmlyc3Q="
+    second_image = "data:image/png;base64,c2Vjb25k"
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=["ReadImage"],
+                llm={
+                    "model": "fake-vision-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+                trace_dir=str(trace_dir),
+            )
+            self.calls: list[list[dict]] = []
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            self.calls.append(json.loads(json.dumps(msgs)))
+            if len(self.calls) == 1:
+                return {
+                    "status": "ok",
+                    "finish_reason": "tool_calls",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_img",
+                            "type": "function",
+                            "function": {
+                                "name": "ReadImage",
+                                "arguments": json.dumps({"path": "second.png"}),
+                            },
+                        }
+                    ],
+                }
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+        def custom_call_tool(self, tool_name: str, tool_args: object, **kwargs):
+            return {
+                "kind": "image_tool_result",
+                "text": f"path: {case_dir / 'second.png'}\nllm_image_attached: true",
+                "path": str(case_dir / "second.png"),
+                "image_url": second_image,
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session(
+        "inspect images",
+        workspace_root=str(case_dir),
+        initial_content_parts=[{"type": "image_url", "image_url": {"url": first_image, "detail": "auto"}}],
+    )
+    second_call = agent.calls[1] if len(agent.calls) > 1 else []
+    second_call_text = json.dumps(second_call, ensure_ascii=False)
+    trace_records = load_trace_records(single_trace_path(trace_dir))
+    llm_records = [row for row in trace_records if row.get("capture_type") == "llm_call"]
+    last_payload = llm_records[-1].get("payload", {}) if llm_records else {}
+    request_text = json.dumps(last_payload.get("request_messages", []), ensure_ascii=False)
+    image_aging = last_payload.get("image_aging", {})
+    image_aging_text = json.dumps(image_aging, ensure_ascii=False)
+    session_state_text = (trace_dir / "_session_state.json").read_text(encoding="utf-8")
+    ok = (
+        session.get("termination") == "result"
+        and first_image not in second_call_text
+        and second_image in second_call_text
+        and "Previous image omitted" in second_call_text
+        and first_image not in request_text
+        and "full_messages_before_request" not in last_payload
+        and image_aging.get("omitted_image_count") == 1
+        and first_image not in image_aging_text
+        and "base64 omitted" in image_aging_text
+        and first_image in session_state_text
+        and second_image in session_state_text
+    )
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "second_call_contains_first_image": first_image in second_call_text,
+            "second_call_contains_second_image": second_image in second_call_text,
+            "request_contains_first_image": first_image in request_text,
+            "has_full_messages_before_request": "full_messages_before_request" in last_payload,
+            "image_aging": image_aging,
+            "image_aging_contains_first_image": first_image in image_aging_text,
+            "session_state_contains_first_image": first_image in session_state_text,
+            "session_state_contains_second_image": second_image in session_state_text,
+            "second_call": second_call,
+        },
+        ensure_ascii=False,
+        indent=2,
     )
     return ok, detail
 
@@ -1106,6 +1240,8 @@ def check_context_compaction_persists_summary_and_session_state() -> tuple[bool,
         session.get("termination") == "result"
         and session.get("result_text") == "done"
         and session_state_path.exists()
+        and session_state_path.parent.name == "traces"
+        and not (case_dir / "_session_state.json").exists()
         and session_state.get("model_profile", {}).get("compact_trigger_tokens_override") == 16384
         and len(compactions) == 1
         and compactions[0].get("status") == "ok"
@@ -1240,6 +1376,8 @@ def check_context_compaction_failure_is_recorded_before_hard_stop() -> tuple[boo
 
     class FakeAgent(MultiTurnReactAgent):
         def __init__(self):
+            trace_dir = case_dir / "traces"
+            trace_dir.mkdir(parents=True, exist_ok=True)
             super().__init__(
                 function_list=["Read"],
                 llm={
@@ -1253,6 +1391,7 @@ def check_context_compaction_failure_is_recorded_before_hard_stop() -> tuple[boo
                         "presence_penalty": 0.0,
                     },
                 },
+                trace_dir=str(trace_dir),
             )
             self._turn = 0
             self.compaction_requests = []
@@ -1309,6 +1448,9 @@ def check_context_compaction_failure_is_recorded_before_hard_stop() -> tuple[boo
     ok = (
         isinstance(session.get("termination"), str)
         and session["termination"].startswith("input token limit reached")
+        and session_state_path.exists()
+        and session_state_path.parent.name == "traces"
+        and not (case_dir / "_session_state.json").exists()
         and session_state.get("termination", "").startswith("input token limit reached")
         and len(compactions) == 1
         and compactions[0].get("status") == "error"
@@ -1502,12 +1644,35 @@ def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, s
     gpt_agent._llm_api_base = "http://fake"
     gpt_reply = gpt_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
 
+    gpt55_agent = MultiTurnReactAgent(
+        function_list=[],
+        llm={
+            "model": "openai/gpt-5.5-20260501",
+            "api_base": "http://fake",
+            "api_key": "fake",
+            "generate_cfg": {
+                "max_input_tokens": 10000,
+                "max_output_tokens": 100,
+                "max_retries": 1,
+                "temperature": 0.2,
+                "top_p": 0.7,
+                "presence_penalty": 0.0,
+            },
+        },
+    )
+    gpt55_client = FakeClient()
+    gpt55_agent._llm_client = gpt55_client
+    gpt55_agent._llm_api_base = "http://fake"
+    gpt55_reply = gpt55_agent.call_llm_api([{"role": "user", "content": "hello"}], max_tries=1)
+
     detail = json.dumps(
         {
             "claude_request_kwargs": claude_client.request_kwargs,
             "claude_reply": claude_reply,
             "gpt_request_kwargs": gpt_client.request_kwargs,
             "gpt_reply": gpt_reply,
+            "gpt55_request_kwargs": gpt55_client.request_kwargs,
+            "gpt55_reply": gpt55_reply,
         },
         ensure_ascii=False,
         indent=2,
@@ -1521,65 +1686,156 @@ def check_claude_models_skip_sampling_params_in_agent_runtime() -> tuple[bool, s
         and gpt_client.request_kwargs.get("temperature") == 0.2
         and gpt_client.request_kwargs.get("top_p") == 0.7
         and gpt_client.request_kwargs.get("presence_penalty") == 0.0
+        and isinstance(gpt55_client.request_kwargs, dict)
+        and gpt55_client.request_kwargs.get("temperature") == 0.2
+        and gpt55_client.request_kwargs.get("top_p") == 0.7
+        and "presence_penalty" not in gpt55_client.request_kwargs
     )
     return ok, detail
 
 
-def check_claude_models_skip_sampling_params_in_webfetch_summary() -> tuple[bool, str]:
+def check_webfetch_returns_range_bounded_page_text_without_summary_llm() -> tuple[bool, str]:
     from agent_base.tools.tool_web import WebFetch
 
-    class FakeMessage:
-        content = "summary"
+    old_timeout = os.environ.get("WEBFETCH_TIMEOUT_SECONDS")
+    old_max_chars = os.environ.get("WEBFETCH_MAX_CHARS")
+    try:
+        os.environ["WEBFETCH_TIMEOUT_SECONDS"] = "30"
+        os.environ["WEBFETCH_MAX_CHARS"] = "20"
+        fetch = WebFetch()
+        fetched_urls: list[str] = []
 
-    class FakeClient:
-        def __init__(self):
-            self.request_kwargs = None
-            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+        def fake_readpage(url, runtime_deadline=None):
+            fetched_urls.append(url)
+            return "\n".join(["line 1 alpha", "line 2 beta", "line 3 gamma", "line 4 delta"])
 
-        def with_options(self, **kwargs):
-            return self
-
-        def create(self, **kwargs):
-            self.request_kwargs = kwargs
-            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=FakeMessage())])
-
-    claude_fetch = WebFetch()
-    claude_fetch._summary_client = FakeClient()
-    claude_fetch._summary_api_base = "http://fake"
-    claude_fetch._summary_model_name = "anthropic/claude-3-5-sonnet"
-    claude_fetch._summary_temperature = 0.3
-    claude_fetch._summary_top_p = 0.8
-    claude_fetch._summary_presence_penalty = 0.2
-    claude_result = claude_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
-
-    gpt_fetch = WebFetch()
-    gpt_fetch._summary_client = FakeClient()
-    gpt_fetch._summary_api_base = "http://fake"
-    gpt_fetch._summary_model_name = "gpt-5.4"
-    gpt_fetch._summary_temperature = 0.3
-    gpt_fetch._summary_top_p = 0.8
-    gpt_fetch._summary_presence_penalty = 0.2
-    gpt_result = gpt_fetch.call_server([{"role": "user", "content": "Summarize"}], max_retries=1)
+        fetch.html_readpage_jina = fake_readpage
+        result = fetch.call(
+            {
+                "url": "https://example.com",
+                "start_line": 2,
+                "end_line": 4,
+            },
+            model_name="claude-opus-4-7",
+        )
+        oversized_result = fetch.call(
+            {
+                "url": "https://example.com",
+                "max_chars": 21,
+            }
+        )
+        missing_url_result = fetch.call({})
+        invalid_url_result = fetch.call({"url": {"not": "valid"}})
+        start_line_result = fetch.call({"url": "https://example.com", "start_line": 0})
+        end_line_result = fetch.call({"url": "https://example.com", "start_line": 3, "end_line": 2})
+        max_chars_zero_result = fetch.call({"url": "https://example.com", "max_chars": 0})
+        list_result = fetch.call(
+            {
+                "url": ["https://example.com/a", "https://example.com/b"],
+                "start_line": 1,
+                "end_line": 1,
+                "max_chars": 20,
+            }
+        )
+    finally:
+        if old_timeout is None:
+            os.environ.pop("WEBFETCH_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["WEBFETCH_TIMEOUT_SECONDS"] = old_timeout
+        if old_max_chars is None:
+            os.environ.pop("WEBFETCH_MAX_CHARS", None)
+        else:
+            os.environ["WEBFETCH_MAX_CHARS"] = old_max_chars
 
     detail = json.dumps(
         {
-            "claude_request_kwargs": claude_fetch._summary_client.request_kwargs,
-            "claude_result": claude_result,
-            "gpt_request_kwargs": gpt_fetch._summary_client.request_kwargs,
-            "gpt_result": gpt_result,
+            "result": result,
+            "result_preview": result[:200],
+            "oversized_result": oversized_result,
+            "missing_url_result": missing_url_result,
+            "invalid_url_result": invalid_url_result,
+            "start_line_result": start_line_result,
+            "end_line_result": end_line_result,
+            "max_chars_zero_result": max_chars_zero_result,
+            "list_result": list_result,
+            "fetched_urls": fetched_urls,
         },
         ensure_ascii=False,
         indent=2,
     )
     ok = (
-        isinstance(claude_fetch._summary_client.request_kwargs, dict)
-        and "temperature" not in claude_fetch._summary_client.request_kwargs
-        and "top_p" not in claude_fetch._summary_client.request_kwargs
-        and "presence_penalty" not in claude_fetch._summary_client.request_kwargs
-        and isinstance(gpt_fetch._summary_client.request_kwargs, dict)
-        and gpt_fetch._summary_client.request_kwargs.get("temperature") == 0.3
-        and gpt_fetch._summary_client.request_kwargs.get("top_p") == 0.8
-        and gpt_fetch._summary_client.request_kwargs.get("presence_penalty") == 0.2
+        "source_type: web" in result
+        and "start_line: 2" in result
+        and "end_line: 4" in result
+        and "truncated: true" in result
+        and "line 2 beta" in result
+        and "line 1 alpha" not in result
+        and "Summary:" not in result
+        and "Evidence in page:" not in result
+        and not hasattr(fetch, "call_server")
+        and "goal" not in WebFetch.parameters["properties"]
+        and WebFetch.parameters["required"] == ["url"]
+        and "max_chars must be <= WEBFETCH_MAX_CHARS (20)" in oversized_result
+        and "Missing required parameter: url" in missing_url_result
+        and "Parameter 'url' must be of type string or array" in invalid_url_result
+        and "start_line must be >= 1" in start_line_result
+        and "end_line must be >= start_line" in end_line_result
+        and "max_chars must be > 0" in max_chars_zero_result
+        and list_result.count("source_type: web") == 2
+        and "=======\nurl: https://example.com/b" in list_result
+        and fetched_urls == ["https://example.com", "https://example.com/a", "https://example.com/b"]
+    )
+    return ok, detail
+
+
+def check_session_state_is_only_written_with_trace_dir() -> tuple[bool, str]:
+    from agent_base.react_agent import MultiTurnReactAgent
+
+    case_dir = TMP_DIR / "session_state_without_trace"
+    shutil.rmtree(case_dir, ignore_errors=True)
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeAgent(MultiTurnReactAgent):
+        def __init__(self):
+            super().__init__(
+                function_list=[],
+                llm={
+                    "model": "fake-model",
+                    "generate_cfg": {
+                        "max_input_tokens": 10000,
+                        "max_output_tokens": 512,
+                        "max_retries": 1,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "presence_penalty": 0.0,
+                    },
+                },
+            )
+
+        def call_llm_api(self, msgs, max_tries=10, runtime_deadline=None):
+            return {
+                "status": "ok",
+                "finish_reason": "stop",
+                "content": "done",
+                "tool_calls": [],
+            }
+
+    agent = FakeAgent()
+    session = agent._run_session("Return done.", workspace_root=str(case_dir))
+    workspace_state_path = case_dir / "_session_state.json"
+    detail = json.dumps(
+        {
+            "termination": session.get("termination"),
+            "session_state_path": session.get("session_state_path"),
+            "workspace_state_exists": workspace_state_path.exists(),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    ok = (
+        session.get("termination") == "result"
+        and session.get("session_state_path") == ""
+        and not workspace_state_path.exists()
     )
     return ok, detail
 
@@ -1590,25 +1846,28 @@ def main() -> int:
 
     checks = [
         ("Workspace root auto-create", check_workspace_root_is_created_when_missing),
+        ("Required env enforced", check_required_env_is_enforced),
         ("ReadPDF relative image path", check_readpdf_relative_image_path),
         ("TerminalInterrupt remainder", check_terminal_interrupt_preserves_remainder),
         ("Agent runtime limit", check_agent_runtime_limit_on_tool_execution),
         ("LLM hard timeout", check_llm_hard_timeout_interrupts_blocking_call),
         ("Parallel ReadImage tool order", check_parallel_readimage_tool_message_order),
         ("DeepSeek ReadImage fallback", check_deepseek_readimage_falls_back_to_text_only_context),
+        ("Old image parts omitted but traced", check_old_image_parts_are_omitted_from_followup_requests_but_traced),
         ("Reasoning content preserved", check_reasoning_content_is_preserved_across_tool_rounds),
         ("Reasoning content preserved on invalid retry", check_reasoning_content_is_preserved_across_invalid_retry_turns),
         ("Mixed text and tool calls executed", check_mixed_text_and_tool_calls_are_executed),
         ("Reasoning replay error reported", check_reasoning_replay_error_is_reported_without_recovery),
         ("Compact trigger parser", check_compact_trigger_token_parser_supports_k_suffix),
         ("Context compaction persists state", check_context_compaction_persists_summary_and_session_state),
+        ("Session state requires trace dir", check_session_state_is_only_written_with_trace_dir),
         ("Context compaction refreshes memory", check_context_compaction_refreshes_existing_memory_without_recursive_summary),
         ("Context compaction failure recorded", check_context_compaction_failure_is_recorded_before_hard_stop),
         ("Double-encoded tool args unwrapped", check_double_encoded_tool_arguments_are_unwrapped),
         ("Truncated tool call replay", check_truncated_tool_call_turn_is_replayed_without_execution),
         ("Terminal error accepts artifact", check_terminal_error_can_be_accepted_after_completion_artifact),
         ("Claude runtime sampling params", check_claude_models_skip_sampling_params_in_agent_runtime),
-        ("Claude WebFetch sampling params", check_claude_models_skip_sampling_params_in_webfetch_summary),
+        ("WebFetch range-bounded page text", check_webfetch_returns_range_bounded_page_text_without_summary_llm),
         ("Plaintext result max rounds", check_plaintext_result_rejection_hits_max_rounds),
         ("Bash output bounding", check_bash_output_bounding_and_repeat_collapse),
     ]

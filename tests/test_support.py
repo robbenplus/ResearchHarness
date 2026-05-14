@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ ROOT = _resolve_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent_base.utils import load_dotenv
+from agent_base.utils import MissingRequiredEnvError, load_dotenv, require_required_env
 
 
 WORKSPACE_ROOT = ROOT / "workspace"
@@ -51,10 +52,18 @@ TRACE_REQUIRED_KEYS = {
 
 def bootstrap() -> None:
     load_dotenv(ROOT / ".env")
+    require_test_env()
     os.environ["WORKSPACE_ROOT"] = str(ROOT)
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+
+
+def require_test_env() -> None:
+    try:
+        require_required_env("ResearchHarness tests")
+    except MissingRequiredEnvError as exc:
+        raise SystemExit(str(exc)) from None
 
 
 def subprocess_python() -> list[str]:
@@ -176,6 +185,18 @@ def required_test_pdf() -> Path:
     if not REQUIRED_TEST_PDF.exists():
         raise FileNotFoundError(f"Required test PDF is missing: {REQUIRED_TEST_PDF}")
     return REQUIRED_TEST_PDF
+
+
+def clear_pdf_parse_cache(pdf_path: Path) -> Path:
+    cache_dir = pdf_path.with_suffix("")
+    if cache_dir.exists():
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+        else:
+            cache_dir.unlink()
+    if cache_dir.exists():
+        raise RuntimeError(f"Failed to clear ReadPDF cache directory: {cache_dir}")
+    return cache_dir
 
 
 def main() -> int:

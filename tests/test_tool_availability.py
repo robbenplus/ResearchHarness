@@ -1,22 +1,31 @@
 import argparse
 import io
 import json
-import os
 import re
+import shutil
 import sys
 import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_support import EXAMPLE_TEXT_FILES_DIR, TEST_RUNS_DIR, bootstrap, has_structai, required_test_image, required_test_pdf
+from test_support import (
+    EXAMPLE_TEXT_FILES_DIR,
+    TEST_RUNS_DIR,
+    bootstrap,
+    clear_pdf_parse_cache,
+    has_structai,
+    required_test_image,
+    required_test_pdf,
+)
 
 
 DEFAULT_VISIT_URL = "https://en.wikipedia.org/wiki/Attention_Is_All_You_Need"
+NETWORK_TOOL_NAMES = {"WebSearch", "ScholarSearch", "WebFetch", "ReadPDF"}
 
 
 def preview(value: Any, limit: int = 500) -> str:
@@ -24,10 +33,6 @@ def preview(value: Any, limit: int = 500) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "...(truncated)"
-
-
-def missing_env(keys: Iterable[str]) -> list[str]:
-    return [key for key in keys if not os.getenv(key)]
 
 
 def call_with_capture(func: Callable[..., Any], *args, **kwargs) -> tuple[Any, str, str]:
@@ -71,10 +76,6 @@ def make_result(
 
 def test_search() -> ToolTestResult:
     started_at = time.time()
-    missing = missing_env(["SERPER_KEY_ID"])
-    if missing:
-        return make_result("WebSearch", "SKIP", started_at, f"Missing environment variables: {', '.join(missing)}")
-
     from agent_base.tools.tool_web import WebSearch
 
     tool = WebSearch()
@@ -87,10 +88,6 @@ def test_search() -> ToolTestResult:
 
 def test_google_scholar() -> ToolTestResult:
     started_at = time.time()
-    missing = missing_env(["SERPER_KEY_ID"])
-    if missing:
-        return make_result("ScholarSearch", "SKIP", started_at, f"Missing environment variables: {', '.join(missing)}")
-
     from agent_base.tools.tool_web import ScholarSearch
 
     tool = ScholarSearch()
@@ -103,10 +100,6 @@ def test_google_scholar() -> ToolTestResult:
 
 def test_visit() -> ToolTestResult:
     started_at = time.time()
-    missing = missing_env(["JINA_API_KEYS", "API_KEY", "API_BASE"])
-    if missing:
-        return make_result("WebFetch", "SKIP", started_at, f"Missing environment variables: {', '.join(missing)}")
-
     from agent_base.tools.tool_web import WebFetch
 
     tool = WebFetch()
@@ -114,18 +107,16 @@ def test_visit() -> ToolTestResult:
         tool.call,
         {
             "url": [DEFAULT_VISIT_URL],
-            "goal": "Find the authors of the paper and the publication year.",
         },
     )
     text = str(result)
     bad_markers = [
         "[WebFetch] Failed to read page.",
-        "The webpage content could not be processed",
         "The provided webpage content could not be accessed",
     ]
-    if "Evidence in page:" not in text or "Summary:" not in text or any(marker in text for marker in bad_markers):
-        return make_result("WebFetch", "FAIL", started_at, "WebFetch did not return a usable summary.", text, stdout, stderr)
-    return make_result("WebFetch", "PASS", started_at, "WebFetch returned webpage evidence and summary.", text, stdout, stderr)
+    if "source_type: web" not in text or "content:" not in text or any(marker in text for marker in bad_markers):
+        return make_result("WebFetch", "FAIL", started_at, "WebFetch did not return usable webpage content.", text, stdout, stderr)
+    return make_result("WebFetch", "PASS", started_at, "WebFetch returned webpage content.", text, stdout, stderr)
 
 
 def test_read() -> ToolTestResult:
@@ -179,17 +170,24 @@ def test_read_pdf() -> ToolTestResult:
     from agent_base.tools.tool_file import ReadPDF
 
     pdf_path = required_test_pdf()
-    if not os.getenv("MINERU_TOKEN"):
-        return make_result("ReadPDF", "SKIP", started_at, "Missing environment variable: MINERU_TOKEN")
+    cache_dir = clear_pdf_parse_cache(pdf_path)
     if not has_structai():
-        return make_result("ReadPDF", "SKIP", started_at, "Missing optional dependency: structai")
+        return make_result("ReadPDF", "FAIL", started_at, "Missing required dependency: structai")
 
     tool = ReadPDF()
     result, stdout, stderr = call_with_capture(tool.call, {"path": str(pdf_path), "max_chars": 2000})
     text = str(result)
     if "source_type: pdf" not in text or "Dummy PDF file" not in text:
         return make_result("ReadPDF", "FAIL", started_at, "ReadPDF did not return expected PDF content.", text, stdout, stderr)
-    return make_result("ReadPDF", "PASS", started_at, "ReadPDF returned expected PDF content.", text, stdout, stderr)
+    return make_result(
+        "ReadPDF",
+        "PASS",
+        started_at,
+        f"ReadPDF returned expected PDF content after clearing cache: {cache_dir}",
+        text,
+        stdout,
+        stderr,
+    )
 
 
 def test_read_image() -> ToolTestResult:
@@ -265,6 +263,27 @@ def test_bash() -> ToolTestResult:
     if "exit_code: 0" not in text or "Hello." not in text:
         return make_result("Bash", "FAIL", started_at, "Bash did not execute the expected command.", text, stdout, stderr)
     return make_result("Bash", "PASS", started_at, "Bash executed the expected command.", text, stdout, stderr)
+
+
+def test_ask_user() -> ToolTestResult:
+    started_at = time.time()
+    from agent_base.tools.tool_user import AskUser
+
+    prompt_output = io.StringIO()
+    result, stdout, stderr = call_with_capture(
+        AskUser().call,
+        {
+            "question": "Which deterministic answer should be used?",
+            "context": "Testing AskUser availability.",
+        },
+        input_stream=io.StringIO("availability-ok\n"),
+        output_stream=prompt_output,
+    )
+    text = str(result)
+    combined_stdout = stdout + prompt_output.getvalue()
+    if "User answer" not in text or "availability-ok" not in text or "Which deterministic answer" not in combined_stdout:
+        return make_result("AskUser", "FAIL", started_at, "AskUser did not return the expected deterministic answer.", text, combined_stdout, stderr)
+    return make_result("AskUser", "PASS", started_at, "AskUser returned the expected deterministic answer.", text, combined_stdout, stderr)
 
 
 def test_terminal_toolchain() -> ToolTestResult:
@@ -353,7 +372,49 @@ def test_terminal_toolchain() -> ToolTestResult:
     return make_result("TerminalToolchain", "PASS", started_at, "Terminal toolchain executed successfully.", combined, stdout, stderr)
 
 
+def test_main_agent_api() -> ToolTestResult:
+    started_at = time.time()
+    from agent_base.react_agent import MultiTurnReactAgent, default_llm_config
+
+    workdir = TEST_RUNS_DIR / "tool_availability_check" / "main_agent_api"
+    trace_dir = workdir / "trace"
+    shutil.rmtree(workdir, ignore_errors=True)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    llm_config = default_llm_config()
+    generate_cfg = dict(llm_config.get("generate_cfg") or {})
+    generate_cfg["max_output_tokens"] = 32
+    generate_cfg["max_retries"] = 2
+    llm_config["generate_cfg"] = generate_cfg
+
+    agent = MultiTurnReactAgent(
+        function_list=[],
+        llm=llm_config,
+        trace_dir=str(trace_dir),
+        max_rounds=2,
+        max_runtime_seconds=180,
+    )
+    result, stdout, stderr = call_with_capture(
+        agent.run,
+        "Reply with exactly the lowercase token main-agent-ok and no other text.",
+        workspace_root=str(workdir),
+    )
+    text = str(result).strip()
+    if "main-agent-ok" not in text.lower():
+        return make_result(
+            "MainAgentAPI",
+            "FAIL",
+            started_at,
+            "Main agent real API call did not return the expected marker.",
+            text,
+            stdout,
+            stderr,
+        )
+    return make_result("MainAgentAPI", "PASS", started_at, "Main agent real API call completed successfully.", text, stdout, stderr)
+
+
 TESTS: dict[str, Callable[[], ToolTestResult]] = {
+    "MainAgentAPI": test_main_agent_api,
     "WebSearch": test_search,
     "ScholarSearch": test_google_scholar,
     "WebFetch": test_visit,
@@ -365,8 +426,26 @@ TESTS: dict[str, Callable[[], ToolTestResult]] = {
     "Write": test_write,
     "Edit": test_edit,
     "Bash": test_bash,
+    "AskUser": test_ask_user,
     "TerminalToolchain": test_terminal_toolchain,
 }
+TOOL_COVERAGE_NAMES = {
+    name for name in TESTS if name != "TerminalToolchain"
+} | {
+    "TerminalStart",
+    "TerminalWrite",
+    "TerminalRead",
+    "TerminalInterrupt",
+    "TerminalKill",
+}
+
+
+def assert_all_runtime_tools_are_covered() -> None:
+    from agent_base.react_agent import AVAILABLE_TOOL_MAP
+
+    missing = sorted(set(AVAILABLE_TOOL_MAP) - TOOL_COVERAGE_NAMES)
+    if missing:
+        raise RuntimeError(f"Missing tool availability checks for runtime tools: {', '.join(missing)}")
 
 
 def run_selected_tests(selected: list[str]) -> list[ToolTestResult]:
@@ -401,8 +480,12 @@ def print_human_readable(results: list[ToolTestResult]) -> None:
     total = len(results)
     passed = sum(result.status == "PASS" for result in results)
     failed = sum(result.status == "FAIL" for result in results)
-    skipped = sum(result.status == "SKIP" for result in results)
-    print(f"\nSummary: total={total}, passed={passed}, failed={failed}, skipped={skipped}")
+    print(f"\nSummary: total={total}, passed={passed}, failed={failed}")
+    if any(result.status != "PASS" and result.name in NETWORK_TOOL_NAMES for result in results):
+        print(
+            "\nHint: If WebSearch, ScholarSearch, WebFetch, or ReadPDF fails with network, TLS, "
+            "upload, download, or parsing errors, retry with VPN/proxy disabled."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -424,6 +507,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     bootstrap()
+    assert_all_runtime_tools_are_covered()
     args = parse_args()
     results = run_selected_tests(args.only)
 
@@ -432,7 +516,7 @@ def main() -> int:
     else:
         print_human_readable(results)
 
-    has_failures = any(result.status == "FAIL" for result in results)
+    has_failures = any(result.status != "PASS" for result in results)
     return 1 if has_failures else 0
 
 
