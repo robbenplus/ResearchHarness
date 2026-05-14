@@ -7,7 +7,7 @@ ResearchHarness is intended to serve here as a **general and fair execution
 substrate** for tool-using LLM evaluation, while `ResearchClawBench` remains in
 charge of task construction, hidden-answer isolation, and scoring.
 
-## Recommended `agents.json` Entry
+## Recommended [`agents.json`](https://github.com/InternScience/ResearchClawBench/blob/main/evaluation/agents.json) Entry
 
 Use a single direct command that launches the thin top-level ResearchHarness
 entrypoint.
@@ -18,7 +18,7 @@ entrypoint.
     "label": "ResearchHarness",
     "icon": "H",
     "logo": "/static/logos/rh.svg",
-    "cmd": "python3 /abs/path/to/ResearchHarness/run_agent.py <PROMPT> --workspace-root <WORKSPACE> --role-prompt-file /abs/path/to/ResearchHarness/benchmarks/ResearchClawBench/role_prompt.md --trace-dir <WORKSPACE>"
+    "cmd": "python3 /abs/path/to/ResearchHarness/run_agent.py <PROMPT> --workspace-root <WORKSPACE> --role-prompt-file /abs/path/to/ResearchHarness/benchmarks/ResearchClawBench/role_prompt.md"
   }
 }
 ```
@@ -29,14 +29,24 @@ entrypoint.
   and isolates hidden checklist data.
 - `ResearchHarness` should only execute the agent through a stable harness
   interface.
-- The command stays unchanged. The entrypoint automatically selects the
-  lightweight adapter in `benchmarks/ResearchClawBench/adapter.py` when this
-  benchmark role prompt is used.
+- The command stays a simple one-line `agents.json` entry. The entrypoint
+  automatically selects the lightweight adapter in
+  `benchmarks/ResearchClawBench/adapter.py` when this benchmark role prompt is
+  used.
 
 ## Notes
 
 - Replace `/abs/path/to/ResearchHarness/` with the real local checkout path.
 - The command should stay one-line and non-interactive.
+- Optional extra tools can be added directly to the same command. For example,
+  add `--extra-tool str_replace_editor` if the benchmark configuration should
+  expose the Anthropic-style text editing compatibility tool. `--extra-tool` may
+  be passed multiple times when more optional tools exist.
+- By default, no ResearchHarness trace is saved. If you want to save traces
+  during evaluation, create a separate trace directory and add
+  `--trace-dir /path/to/trace-dir` directly to the command. Do not use
+  `<WORKSPACE>` as the trace directory, because that exposes `trace_*.jsonl` and
+  `_session_state.json` to the evaluated agent.
 - The adapter prevents premature termination on long tasks by refusing to accept
   plain-text completion before `report/report.md` exists in the workspace.
 - The adapter excludes `AskUser`; RCB runs must remain fully non-interactive.
